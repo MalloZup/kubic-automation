@@ -2,9 +2,11 @@
 
 Welcome to kubic-automation.
 
-- [deploy](deploy/README.md) contains all deployment logic
+- [deploy](deploy/) contains all deployment logic
 
-- [tests](tests/README.md) contains tests for the infrastructure
+- [tests](tests/) contains tests for the infrastructure
+
+- [jenkins-pipelines](jenkins-pipelines) contains tests for the infrastructure
 
 # Roadmap:
 

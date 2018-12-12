@@ -1,4 +1,5 @@
 # Jenkins Pipelines
 
-A set of Jenkins pipelines which are not directly associated with a specific
-repo. e.g. Nightly builds.
+A set of Jenkins pipelines.
+
+We also have an utility for creating jobs-automatically.
