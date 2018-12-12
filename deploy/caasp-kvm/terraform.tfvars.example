@@ -1,0 +1,22 @@
+#####################
+# libvirt variables #
+#####################
+# A remote host running libvirt
+# eg: an host with more than 8GB or RAM
+#libvirt_uri = "qemu+ssh://root@arrakis/system"
+
+# A custom pool defined on the libvirt host
+# eg: a pool backed by a fast SSD
+#pool = "home_libvirtd"
+
+# A different pool can be specified for additional disks attached to workers
+# eg: a pool backed by a slow spinner
+#additional_volume_pool = "default"
+
+#####################
+# Cluster variables #
+#####################
+# A range that doesn't conflict with the SUSE network
+# and allows a similar naming.
+#network = "172.30.0.0/22"
+#net_mode = "route"

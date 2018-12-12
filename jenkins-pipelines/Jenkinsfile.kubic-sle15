@@ -1,0 +1,33 @@
+def targetBranch = env.getEnvironment().get('CHANGE_TARGET', env.BRANCH_NAME)
+def kubicLib = library("kubic-jenkins-library@${targetBranch}").com.suse.kubic
+
+// Run a build using the SLE15 based image daily.
+properties([
+    buildDiscarder(logRotator(numToKeepStr: '31', daysToKeepStr: '31')),
+    disableConcurrentBuilds(),
+    pipelineTriggers([cron('H H(3-5) * * *')]),
+    parameters([
+        string(name: 'MASTER_COUNT', defaultValue: '1', description: 'Number of Master Nodes'),
+        string(name: 'WORKER_COUNT', defaultValue: '3', description: 'Number of Worker Nodes'),
+        booleanParam(name: 'ENVIRONMENT_DESTROY', defaultValue: true, description: 'Destroy env once done?')
+    ])
+])
+
+def kvmTypeOptions = kubicLib.CaaspKvmTypeOptions.new();
+kvmTypeOptions.vanilla = true
+kvmTypeOptions.disableMeltdownSpectreFixes = false
+kvmTypeOptions.image = "channel://devel_15"
+
+coreKubicProjectPeriodic(
+    environmentTypeOptions: kvmTypeOptions,
+    environmentDestroy: env.ENVIRONMENT_DESTROY.toBoolean(),
+    masterCount: env.MASTER_COUNT.toInteger(),
+    workerCount: env.WORKER_COUNT.toInteger(),
+){}
+{
+    coreKubicProjectTests(
+        environment: environment,
+        podName: 'default',
+    )
+    return environment
+}

@@ -1,0 +1,37 @@
+def kubicLib = library("kubic-jenkins-library@${env.BRANCH_NAME}").com.suse.kubic
+
+// Configure the build properties
+properties([
+    buildDiscarder(logRotator(numToKeepStr: '31', daysToKeepStr: '31')),
+    disableConcurrentBuilds(),
+    pipelineTriggers([cron('H H(3-5) * * *')]),
+    parameters([
+        booleanParam(name: 'ENVIRONMENT_DESTROY', defaultValue: true, description: 'Destroy env once done?')
+    ]),
+])
+
+def kvmTypeOptions = kubicLib.CaaspKvmTypeOptions.new();
+kvmTypeOptions.vanilla = true
+
+coreKubicProjectPeriodic(
+    environmentTypeOptions: kvmTypeOptions,
+    environmentDestroy: env.ENVIRONMENT_DESTROY.toBoolean(),
+) {
+    // empty preBootstrapBody
+} {
+    // Run through the upgrade orchestration
+    upgradeEnvironmentStage1(
+        environment: environment,
+        fakeUpdatesAvailable: true
+    )
+
+    upgradeEnvironmentStage2(
+        environment: environment
+    )
+
+    // Run the Core Project Tests again
+    coreKubicProjectTests(
+        environment: environment,
+        podName: 'default'
+    )
+}

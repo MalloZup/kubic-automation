@@ -1,0 +1,478 @@
+<%# This is the embedded ruby template for the cluster.tf target         -%>
+<%# generate the target by running "erb cluster.tf.erb > cluster.tf"     -%>
+<% if ENV['DISABLE_MELTDOWN_SPECTRE'] == "true" -%>
+<% require 'json' -%>
+<% boot_args = JSON.parse(File.read("#{File.dirname(__FILE__)}/../downloads/kernel-initrd-cmds.json")) -%>
+<% end -%>
+#####################
+# libvirt variables #
+#####################
+
+variable "libvirt_uri" {
+  default     = "qemu:///system"
+  description = "libvirt connection url - default to localhost"
+}
+
+variable "pool" {
+  default     = "default"
+  description = "pool to be used to store all the volumes"
+}
+
+variable "additional_volume_pool" {
+  type        = "string"
+  default     = "default"
+  description = "pool to be used for storing additional, non-os-disk volumes"
+}
+
+#####################
+# Cluster variables #
+#####################
+
+variable "img_source_url" {
+  type        = "string"
+  default     = "channel://devel"
+  description = "CaaSP image to use for KVM - you can use 'http://', 'file://' or 'channel://' formatted addresses. 'http' and 'file' point to remote http, and local images on disk, while 'channel' refers to the release channel from IBS. e.g. 'channel://devel' will download the latest image from the devel channel. Currently supported channels are: devel, staging_a, staging_b, and release"
+}
+
+variable "admin_memory" {
+  default     = 4096
+  description = "The amount of RAM for a admin node"
+}
+
+variable "admin_vcpu" {
+  default     = 4
+  description = "The amount of virtual CPUs for a admin node"
+}
+
+variable "master_count" {
+  default     = 1
+  description = "Number of masters to be created"
+}
+
+variable "master_memory" {
+  default     = 2048
+  description = "The amount of RAM for a master"
+}
+
+variable "master_vcpu" {
+  default     = 2
+  description = "The amount of virtual CPUs for a master"
+}
+
+variable "worker_count" {
+  default     = 2
+  description = "Number of workers to be created"
+}
+
+variable "worker_memory" {
+  default     = 2048
+  description = "The amount of RAM for a worker"
+}
+
+variable "worker_vcpu" {
+  default     = 2
+  description = "The amount of virtual CPUs for a worker"
+}
+
+variable "name_prefix" {
+  type        = "string"
+  default     = ""
+  description = "Optional prefix to be able to have multiple clusters on one host"
+}
+
+variable "domain_name" {
+  type        = "string"
+  default     = "devenv.caasp.suse.net"
+  description = "The domain name"
+}
+
+variable "net_mode" {
+  type        = "string"
+  default     = "nat"
+  description = "Network mode used by the cluster"
+}
+
+variable "network" {
+  type        = "string"
+  default     = "10.17.0.0/22"
+  description = "Network used by the cluster"
+}
+
+variable "additional_volume_size" {
+  default     = 10
+  description = "Size in gigabytes of additional volumes"
+}
+
+####################
+# DevEnv variables #
+####################
+
+variable "kubic_salt_dir" {
+  type = "string"
+  description = "Path to the directory where https://github.com/kubic-project/salt/ has been cloned into"
+}
+
+variable "kubic_velum_dir" {
+  type = "string"
+  description = "Path to the directory where https://github.com/kubic-project/velum has been cloned into"
+}
+
+#######################
+# Cluster declaration #
+#######################
+
+provider "libvirt" {
+  uri = "${var.libvirt_uri}"
+}
+
+# This is the CaaSP kvm image that has been created by IBS
+resource "libvirt_volume" "img" {
+  name   = "${var.name_prefix}${basename(var.img_source_url)}"
+  source = "../downloads/kvm-${basename(var.img_source_url)}"
+  pool   = "${var.pool}"
+}
+
+##############
+# Networking #
+##############
+<% if ENV['CAASP_BRIDGE'] == '' -%>
+resource "libvirt_network" "network" {
+    name      = "${var.name_prefix}caasp-dev-net"
+    mode      = "${var.net_mode}"
+    domain    = "${var.name_prefix}${var.domain_name}"
+    addresses = ["${var.network}"]
+}
+<% end -%>
+
+##############
+# Admin node #
+##############
+resource "libvirt_volume" "admin" {
+  name           = "${var.name_prefix}admin.qcow2"
+  pool           = "${var.pool}"
+  base_volume_id = "${libvirt_volume.img.id}"
+}
+
+resource "libvirt_cloudinit_disk" "admin" {
+  name      = "${var.name_prefix}admin_cloud_init_disk.iso"
+  pool      = "${var.pool}"
+  user_data = "${file("cloud-init/admin.cfg")}"
+}
+
+resource "libvirt_domain" "admin" {
+  name      = "${var.name_prefix}admin"
+  memory    = "${var.admin_memory}"
+  vcpu      = "${var.admin_vcpu}"
+  metadata  = "admin.${var.domain_name},admin,${count.index}"
+  cloudinit = "${libvirt_cloudinit_disk.admin.id}"
+
+  cpu {
+    mode = "host-passthrough"
+  }
+
+<% if !boot_args.nil? -%>
+  kernel = "<%= boot_args["kernel"] %>"
+  initrd = "<%= boot_args["initrd"] %>"
+
+  cmdline {
+  <% boot_args["args"].each do |k, v| -%>
+    "<%= k %>" = "<%= v %>"
+  <% end -%>
+  }
+<% end -%>
+
+  # used to add disk -> cache="unsafe"
+  xml {
+    xslt = "${file("disk_caching.xsl")}"
+  }
+
+  disk {
+    volume_id = "${libvirt_volume.admin.id}"
+  }
+
+  network_interface {
+<% if ENV['CAASP_BRIDGE'] == '' -%>
+    network_id     = "${libvirt_network.network.id}"
+    hostname       = "${var.name_prefix}admin"
+    addresses      = ["${cidrhost("${var.network}", 256)}"]
+<% else -%>
+    bridge = "<%= ENV['CAASP_BRIDGE'] %>"
+<% end -%>
+    wait_for_lease = 1
+  }
+
+  graphics {
+    type        = "vnc"
+    listen_type = "address"
+  }
+
+  connection {
+    type     = "ssh"
+    user     = "root"
+    password = "linux"
+  }
+
+<% if not ENV['VANILLA'] == "true" -%>
+  filesystem {
+    source = "${var.kubic_salt_dir}"
+    target = "salt"
+    readonly = true
+  }
+
+  filesystem {
+    source = "${path.module}/injected-caasp-container-manifests"
+    target = "caasp-container-manifests"
+    readonly = true
+  }
+
+  filesystem {
+    source = "${var.kubic_velum_dir}"
+    target = "velum"
+    readonly = true
+  }
+
+  filesystem {
+    source = "${path.module}/resources/scripts"
+    target = "devel-scripts"
+    readonly = true
+  }
+
+  filesystem {
+    source = "${path.module}/resources/docker-images"
+    target = "devel-docker-images"
+    readonly = true
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "while [[ ! -f /var/run/docker.pid ]]; do echo waiting for docker to start; sleep 1; done",
+      "for image in /var/lib/misc/devel-docker-images/*.tar ; do echo Loading $(basename $image) ; docker load -i $image ; done",
+    ]
+  }
+<% end -%>
+
+  provisioner "remote-exec" {
+    inline = [
+      "for i in `ls -1 /opt/bin/autorun*.sh /opt/bin/autorun*/*.sh` ; do sh $i ; done",
+    ]
+  }
+}
+
+output "ip_admin" {
+  value = "${libvirt_domain.admin.network_interface.0.addresses[0]}"
+}
+
+###################
+# Cluster masters #
+###################
+
+resource "libvirt_volume" "master" {
+  name           = "${var.name_prefix}master_${count.index}.qcow2"
+  pool           = "${var.pool}"
+  base_volume_id = "${libvirt_volume.img.id}"
+  count          = "${var.master_count}"
+}
+
+data "template_file" "master_cloud_init_disk_user_data" {
+  # needed when 0 master nodes are defined
+  count    = "${var.master_count}"
+  template = "${file("cloud-init/master.cfg.tpl")}"
+
+  vars {
+    admin_ip = "${libvirt_domain.admin.network_interface.0.addresses[0]}"
+  }
+
+  depends_on = ["libvirt_domain.admin"]
+}
+
+resource "libvirt_cloudinit_disk" "master" {
+  # needed when 0 master nodes are defined
+  count     = "${var.master_count}"
+  name      = "${var.name_prefix}master_cloud_init_disk${count.index}.iso"
+  pool      = "${var.pool}"
+  user_data = "${element(data.template_file.master_cloud_init_disk_user_data.*.rendered, count.index)}"
+}
+
+resource "libvirt_domain" "master" {
+  count      = "${var.master_count}"
+  name       = "${var.name_prefix}master_${count.index}"
+  memory     = "${var.master_memory}"
+  vcpu       = "${var.master_vcpu}"
+  cloudinit  = "${element(libvirt_cloudinit_disk.master.*.id, count.index)}"
+  metadata   = "master-${count.index}.${var.domain_name},master,${count.index},${var.name_prefix}"
+  depends_on = ["libvirt_domain.admin"]
+
+  cpu {
+    mode = "host-passthrough"
+  }
+
+<% if !boot_args.nil? -%>
+  kernel = "<%= boot_args["kernel"] %>"
+  initrd = "<%= boot_args["initrd"] %>"
+
+  cmdline {
+  <% boot_args["args"].each do |k, v| -%>
+    "<%= k %>" = "<%= v %>"
+  <% end -%>
+  }
+<% end -%>
+
+  # used to add disk -> cache="unsafe"
+  xml {
+    xslt = "${file("disk_caching.xsl")}"
+  }
+
+  disk {
+    volume_id = "${element(libvirt_volume.master.*.id, count.index)}"
+  }
+
+  network_interface {
+<% if ENV['CAASP_BRIDGE'] == '' -%>
+    network_id     = "${libvirt_network.network.id}"
+    hostname       = "${var.name_prefix}master-${count.index}"
+    addresses      = ["${cidrhost("${var.network}", 512 + count.index)}"]
+<% else -%>
+    bridge = "<%= ENV['CAASP_BRIDGE'] %>"
+<% end -%>
+    wait_for_lease = 1
+  }
+
+  graphics {
+    type        = "vnc"
+    listen_type = "address"
+  }
+
+  connection {
+    type     = "ssh"
+    user     = "root"
+    password = "linux"
+  }
+
+  # This ensures the VM is booted and SSH'able
+  provisioner "remote-exec" {
+    inline = [
+      "sleep 1"
+    ]
+  }
+}
+
+output "masters" {
+  value = ["${libvirt_domain.master.*.network_interface.0.addresses[0]}"]
+}
+
+###################
+# Cluster workers #
+###################
+
+resource "libvirt_volume" "worker" {
+  name           = "${var.name_prefix}worker_${count.index}.qcow2"
+  pool           = "${var.pool}"
+  base_volume_id = "${libvirt_volume.img.id}"
+  count          = "${var.worker_count}"
+}
+
+<% if Integer(ENV['ADDITIONAL_VOLUME_COUNT']) > 0 -%>
+resource "libvirt_volume" "additional_worker_volumes" {
+  name       = "${var.name_prefix}additional-worker-volume-${ count.index / <%= ENV['ADDITIONAL_VOLUME_COUNT'] %> }-${ count.index % <%= ENV['ADDITIONAL_VOLUME_COUNT'] %> }"
+  pool       = "${var.additional_volume_pool}"
+  # size param is in bytes, so multiply by 1024 thrice to get GB
+  size       = "${var.additional_volume_size * 1024 * 1024 * 1024}"
+  count      = "${ var.worker_count * <%= ENV['ADDITIONAL_VOLUME_COUNT'] %> }"
+}
+<% end -%>
+
+data "template_file" "worker_cloud_init_disk_user_data" {
+  # needed when 0 worker nodes are defined
+  count    = "${var.worker_count}"
+  template = "${file("cloud-init/worker.cfg.tpl")}"
+
+  vars {
+    admin_ip = "${libvirt_domain.admin.network_interface.0.addresses[0]}"
+  }
+
+  depends_on = ["libvirt_domain.admin"]
+}
+
+resource "libvirt_cloudinit_disk" "worker" {
+  # needed when 0 worker nodes are defined
+  count     = "${var.worker_count}"
+  name      = "${var.name_prefix}worker_cloud_init_disk${count.index}.iso"
+  pool      = "${var.pool}"
+  user_data = "${element(data.template_file.worker_cloud_init_disk_user_data.*.rendered, count.index)}"
+}
+
+resource "libvirt_domain" "worker" {
+  count      = "${var.worker_count}"
+  name       = "${var.name_prefix}worker_${count.index}"
+  memory     = "${var.worker_memory}"
+  vcpu       = "${var.worker_vcpu}"
+  cloudinit  = "${element(libvirt_cloudinit_disk.worker.*.id, count.index)}"
+  metadata   = "worker-${count.index}.${var.domain_name},worker,${count.index},${var.name_prefix}"
+  depends_on = ["libvirt_domain.admin"]
+
+  cpu {
+    mode = "host-passthrough"
+  }
+
+<% if !boot_args.nil? -%>
+  kernel = "<%= boot_args["kernel"] %>"
+  initrd = "<%= boot_args["initrd"] %>"
+
+  cmdline {
+  <% boot_args["args"].each do |k, v| -%>
+    "<%= k %>" = "<%= v %>"
+  <% end -%>
+  }
+<% end -%>
+
+  # used to add disk -> cache="unsafe"
+  xml {
+    xslt = "${file("disk_caching.xsl")}"
+  }
+
+  disk {
+    volume_id = "${element(libvirt_volume.worker.*.id, count.index)}"
+  }
+
+<% if Integer(ENV['ADDITIONAL_VOLUME_COUNT']) > 0 -%>
+  # Additional disks
+  <% Range.new(0, Integer(ENV['ADDITIONAL_VOLUME_COUNT']) - 1).each do |i| -%>
+disk {
+    volume_id = "${element(libvirt_volume.additional_worker_volumes.*.id, count.index * <%= ENV['ADDITIONAL_VOLUME_COUNT'] %> + <%= i %>)}"
+  }
+  <% end -%>
+<% end -%>
+
+  network_interface {
+<% if ENV['CAASP_BRIDGE'] == '' -%>
+    network_id     = "${libvirt_network.network.id}"
+    hostname       = "${var.name_prefix}worker-${count.index}"
+    addresses      = ["${cidrhost("${var.network}", 768 + count.index)}"]
+<% else -%>
+    bridge = "<%= ENV['CAASP_BRIDGE'] %>"
+<% end -%>
+    wait_for_lease = 1
+  }
+
+  graphics {
+    type        = "vnc"
+    listen_type = "address"
+  }
+
+  connection {
+    type     = "ssh"
+    user     = "root"
+    password = "linux"
+  }
+
+  # This ensures the VM is booted and SSH'able
+  provisioner "remote-exec" {
+    inline = [
+      "sleep 1"
+    ]
+  }
+}
+
+output "workers" {
+  value = ["${libvirt_domain.worker.*.network_interface.0.addresses[0]}"]
+}

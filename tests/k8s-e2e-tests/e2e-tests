@@ -1,0 +1,125 @@
+#!/bin/sh
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+ARTIFACTS_PATH=$DIR/results
+KUBECONFIG=
+SONOBUOY_RUN_ARGS=()
+E2E_WAIT_TIME=${E2E_WAIT_TIME:-120} # How long to wait for the test to finish in minutes
+
+USAGE=$(cat <<USAGE
+Usage:
+
+  * providing a "kubeconfig"
+
+    -k|--kubeconfig <FILE>   kubeconfig file
+
+Other:
+    --e2e-focus              set the e2e tests to focus on
+    --e2e-skip               set the e2e tests to skip
+    --artifacts <DIR>        directory where junit XML files are stored
+
+USAGE
+)
+
+# logging and utils
+
+log()        { (>&2 echo ">>> [e2e-tests] $@") ; }
+warn()       { log "WARNING: $@" ; }
+error()      { log "ERROR: $@" ; exit 1 ; }
+abort()      { log "FATAL: $@" ; exit 1 ; }
+check_file() { [ -f "$1" ] || abort "File $1 doesn't exist!" ; }
+
+# options
+
+while [[ $# > 0 ]] ; do
+  case $1 in
+    -k|--kubeconfig)
+      KUBECONFIG="$(realpath $2)"
+      check_file $KUBECONFIG
+      SONOBUOY_RUN_ARGS+=(--kubeconfig $KUBECONFIG)
+      shift
+      ;;
+    --e2e-focus)
+      SONOBUOY_RUN_ARGS+=(--e2e-focus "'$2'")
+      shift
+      ;;
+    --e2e-skip)
+      SONOBUOY_RUN_ARGS+=(--e2e-skip "'$2'")
+      shift
+      ;;
+    --artifacts)
+      ARTIFACTS_PATH="$(realpath $2)"
+      shift
+      ;;
+    -h|--help)
+      echo "$USAGE"
+      exit 0
+      ;;
+  esac
+  shift
+done
+
+test_config() {
+    cat << EOF > sonobuoy.json
+{
+    "plugins": [ { "name": "e2e" } ]
+}
+EOF
+
+    SONOBUOY_RUN_ARGS+=(--config sonobuoy.json)
+}
+
+run_tests() {
+    if ! command -v sonobuoy > /dev/null; then
+        abort "Package sonobuoy needs to be installed"
+    fi
+
+    test_config
+
+    echo "${SONOBUOY_RUN_ARGS[@]}" | xargs -t sonobuoy run
+
+    # wait a bit to let the test start
+    n=6
+    while test $n -gt 0 && sonobuoy status --kubeconfig $KUBECONFIG 2>&1 | grep 'pod has status \\"Pending\\"'
+    do
+        sleep 20
+        n=$(($n - 1))
+    done
+
+    # wait until tests will finish
+    n=$E2E_WAIT_TIME
+    while test $n -gt 0; do
+        # Check the status every two minutes
+        if ! (($n % 2)) && ! sonobuoy status --kubeconfig $KUBECONFIG 2>&1 | grep "Sonobuoy is still running"; then
+            break
+        fi
+        sleep 60
+        n=$(($n - 1))
+    done
+
+    if sonobuoy status --kubeconfig $KUBECONFIG 2>&1 | grep "Sonobuoy has completed"; then
+        # Create the artifacts path
+        mkdir -p $ARTIFACTS_PATH
+        # Copy results from the container
+        sonobuoy retrieve --kubeconfig $KUBECONFIG $ARTIFACTS_PATH
+        # Extract conformance tests tarball results
+        tar -xzf ${ARTIFACTS_PATH}/*_sonobuoy_*.tar.gz -C ${ARTIFACTS_PATH}/
+    elif sonobuoy status --kubeconfig $KUBECONFIG 2>&1 | grep "Sonobuoy is still running"; then
+        abort "Kubernetes e2e tests ran out of time"
+    else
+        abort "Kubernetes e2e tests failed"
+    fi
+}
+
+# checks
+
+if [ -z "$KUBECONFIG" ]; then
+  abort "Option -k|--kubeconfig is required"
+fi
+
+# main
+
+run_tests
+
+log "Done."

@@ -1,0 +1,131 @@
+#!/bin/sh
+
+set -euo pipefail
+
+DIR="$( cd "$( dirname "$0" )" && pwd )"
+
+# the terraform state file
+TF_STATE=${TF_STATE:-$DIR/../terraform.tfstate}
+
+ENVIRONMENT=${ENVIRONMENT:-$DIR/../environment.json}
+
+USAGE=$(cat <<USAGE
+$(basename $0) usage:
+
+Snapshots:
+
+    snap        Create snapshots
+    rollback    Rollback to the latest snapshots
+    flush       Remove all the snapshots
+
+Suspend/resume:
+
+    suspend    Suspend the VMs
+    resume      Resume the VMs
+
+USAGE
+)
+
+# Utility methods
+log()        { (>&2 echo ">>> [libvirt-tool] $@") ; }
+warn()       { log "WARNING: $@" ; }
+error()      { log "ERROR: $@" ; exit 1 ; }
+check_file() { if [ ! -f $1 ]; then error "File $1 doesn't exist!"; fi }
+usage()      { echo "$USAGE" ; exit 0 ; }
+
+################################################################
+
+get_vms() {
+  [ -f "$TF_STATE" ] || \
+    error "No terraform state file found at $TF_STATE - maybe the cluster has not been crated yet"
+
+  cat "$TF_STATE" | \
+      jq ".modules[].resources[] | \
+          select(.type==\"libvirt_domain\") | \
+          .primary | \
+          .attributes | \
+          .name" | tr '"' ' '
+}
+
+do_snap() {
+  log "Creating snapshots"
+  for vm in $(get_vms) ; do
+    sudo virsh snapshot-create --atomic "$vm"
+  done
+}
+
+do_suspend() {
+  log "Suspending VMs"
+  for vm in $(get_vms) ; do
+    sudo virsh suspend "$vm"
+  done
+  log "all VMs suspended"
+}
+
+do_resume() {
+  log "Resuming VMs"
+  for vm in $(get_vms) ; do
+    sudo virsh resume "$vm"
+  done
+  log "all VMs resumed"
+  do_refresh
+}
+
+do_rollback() {
+  do_suspend
+  for vm in $(get_vms) ; do
+    echo "Rolling back $vm"
+    sudo virsh snapshot-revert --current --running "$vm"
+  done
+  do_refresh
+  log "all VMs rolled back"
+}
+
+do_refresh() {
+  log "Refreshing environment"
+  cd $(dirname $TFSTATE)
+  terraform refresh && \
+    $DIR/tools/generate-environment && \
+    $DIR/../misc-tools/generate-ssh-config $ENVIRONMENT
+}
+
+do_flush() {
+  for vm in $(get_vms) ; do
+    log "Destroying snapshots for $vm"
+    while sudo virsh snapshot-delete $vm --current &>/dev/null ; do
+      echo "... removed"
+    done
+  done
+}
+
+command -v jq >/dev/null || {
+  echo "ERROR: jq is not installed - please install jq to generate the environment.json file"
+  exit 1
+}
+
+[ $# -gt 0 ] || usage
+
+# parse options
+case $1 in
+snap|snapshot)
+  do_snap
+  ;;
+rollback|back)
+  do_rollback
+  ;;
+flush)
+  do_flush
+  ;;
+suspend)
+  do_suspend
+  ;;
+resume)
+  do_resume
+  ;;
+-h|--help)
+  usage
+  ;;
+*)
+  usage
+  ;;
+esac

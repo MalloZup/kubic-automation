@@ -1,0 +1,33 @@
+def kubicLib = library("kubic-jenkins-library@${env.BRANCH_NAME}").com.suse.kubic
+
+// This pipeline run end-to-end tests daily against cri-o instead of the default (Docker)
+
+// Configure the build properties
+properties([
+    buildDiscarder(logRotator(numToKeepStr: '31', daysToKeepStr: '31')),
+    disableConcurrentBuilds(),
+    pipelineTriggers([cron('H H(3-5) * * *')]),
+    parameters([
+        string(name: 'MASTER_COUNT', defaultValue: '3', description: 'Number of Master Nodes'),
+        string(name: 'WORKER_COUNT', defaultValue: '2', description: 'Number of Worker Nodes'),
+        booleanParam(name: 'ENVIRONMENT_DESTROY', defaultValue: true, description: 'Destroy env once done'),
+    ])
+])
+
+coreKubicProjectPeriodic(
+    environmentDestroy: env.ENVIRONMENT_DESTROY.toBoolean(),
+    masterCount: env.MASTER_COUNT.toInteger(),
+    workerCount: env.WORKER_COUNT.toInteger(),
+    chooseCrio: true,
+) {
+    // empty preBootstrapBody
+} {
+
+    // Run the Core Project Tests again
+    coreKubicProjectTests(
+        environment: environment,
+        podName: 'default'
+    )
+
+    return environment
+}

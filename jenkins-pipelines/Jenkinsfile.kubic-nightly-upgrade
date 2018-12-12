@@ -1,0 +1,58 @@
+def kubicLib = library("kubic-jenkins-library@${env.BRANCH_NAME}").com.suse.kubic
+
+// Configure the build properties
+properties([
+    buildDiscarder(logRotator(numToKeepStr: '31', daysToKeepStr: '31')),
+    disableConcurrentBuilds(),
+    // Run every two hours
+    pipelineTriggers([cron('H H/2 * * *')]),
+    parameters([
+        booleanParam(name: 'ENVIRONMENT_DESTROY', defaultValue: true, description: 'Destroy env once done?')
+    ]),
+])
+
+def kvmTypeOptions = kubicLib.CaaspKvmTypeOptions.new();
+kvmTypeOptions.vanilla = true
+kvmTypeOptions.channel = 'release'
+
+coreKubicProjectPeriodic(
+    environmentTypeOptions: kvmTypeOptions,
+    environmentDestroy: env.ENVIRONMENT_DESTROY.toBoolean(),
+) {
+    // empty preBootstrapBody
+} {
+    // Install Update Repo
+    prepareUpgradeEnvironment(
+        environment: environment,
+        extraRepos: [
+            'TestUpdate': 'http://download.suse.de/ibs/Devel:/CASP:/Head:/ControllerNode:/TestUpdate/standard/'
+        ]
+    )
+
+    // Run Transactional Update
+    transactionalUpdate(
+        environment: environment
+    )
+
+    // Run through the upgrade orchestration
+    upgradeEnvironmentStage1(
+       environment: environment
+    )
+
+    // On master, we have no branch to switch to..
+    //stage('Switch Branch') {
+    //    dir('automation') {
+    //       sh(script: "git checkout master")
+    //    }
+    //}
+
+    upgradeEnvironmentStage2(
+       environment: environment
+    )
+
+    // Run the Core Project Tests again
+    coreKubicProjectTests(
+        environment: environment,
+        podName: 'default'
+    )
+}

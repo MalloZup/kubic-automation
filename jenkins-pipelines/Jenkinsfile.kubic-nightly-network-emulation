@@ -1,0 +1,47 @@
+def kubicLib = library("kubic-jenkins-library@${env.BRANCH_NAME}").com.suse.kubic
+
+// This pipeline run end-to-end tests daily on an environment that simulates a real network
+// including packet loss, latency with jitter etc
+
+// Configure the build properties
+properties([
+    buildDiscarder(logRotator(numToKeepStr: '31', daysToKeepStr: '31')),
+    disableConcurrentBuilds(),
+    pipelineTriggers([cron('H H(3-5) * * *')]),
+    parameters([
+        string(name: 'MASTER_COUNT', defaultValue: '3', description: 'Number of Master Nodes'),
+        string(name: 'WORKER_COUNT', defaultValue: '2', description: 'Number of Worker Nodes'),
+        booleanParam(name: 'ENVIRONMENT_DESTROY', defaultValue: true, description: 'Destroy env once done'),
+        string(name: 'LATENCY', defaultValue: '50', description: 'Latency (ms)'),
+        string(name: 'JITTER', defaultValue: '20', description: 'Jitter (ms)'),
+        string(name: 'PACKET_LOSS', defaultValue: '1', description: 'Packet loss (percentage)'),
+        string(name: 'DUPLICATION', defaultValue: '0.1', description: 'Duplication (percentage)'),
+        string(name: 'CORRUPTION', defaultValue: '0.1', description: 'Corruption (percentage)'),
+        string(name: 'BANDWIDTH', defaultValue: '1000', description: 'Bandwidth (Mbps)')
+    ])
+])
+
+coreKubicProjectPeriodic(
+    environmentDestroy: env.ENVIRONMENT_DESTROY.toBoolean(),
+    masterCount: env.MASTER_COUNT.toInteger(),
+    workerCount: env.WORKER_COUNT.toInteger()
+) {
+    // empty preBootstrapBody
+} {
+    stage('Setup Network Emulation') {
+      // setup netem on all hosts
+      sh(script: "./automation/misc-tools/network-emulation setup all --env-json-path ${WORKSPACE}/environment.json -l ${WORKSPACE}/logs/netem-setup.log --latency ${LATENCY} --jitter ${JITTER} --packet-loss ${PACKET_LOSS} --duplication ${DUPLICATION} --corruption ${CORRUPTION} --bandwidth ${BANDWIDTH}")
+    }
+
+    // Run the Core Project Tests again
+    coreKubicProjectTests(
+        environment: environment,
+        podName: 'default'
+    )
+
+    stage('Remove Network Emulation') {
+      sh(script: "./automation/misc-tools/network-emulation reset all --env-json-path ${WORKSPACE}/environment.json -l ${WORKSPACE}/logs/netem-reset.log")
+    }
+
+    return environment
+}

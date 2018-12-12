@@ -1,0 +1,80 @@
+library "kubic-jenkins-library@${env.BRANCH_NAME}"
+
+// Workers rotation
+// This pipeline puts Jenkin workers offline and later on removes them at regular intervals.
+// As Jenkins can spawn new workers as needed, this keep the running workers "fresh"
+
+import com.cloudbees.groovy.cps.NonCPS
+import hudson.model.*
+import hudson.slaves.OfflineCause
+import hudson.slaves.OfflineCause.ByCLI
+
+// Configure the run properties
+
+properties([
+    buildDiscarder(logRotator(numToKeepStr: '31', daysToKeepStr: '31')),
+    disableConcurrentBuilds(),
+    pipelineTriggers([cron('00 */2 * * *')])
+])
+
+// configuration
+class Config {
+    static Integer onlineWorkersThreshold = 3
+    static String offlineReasonStr = "Disabled by worker rotation script"
+}
+
+
+
+@NonCPS
+def deleteOfflineNodes() {
+  // Delete any offline node that is not busy
+  for (aSlave in hudson.model.Hudson.instance.slaves) {
+    def c = aSlave.getComputer()
+    if (c.isOffline() == false) continue
+    if (c.getOfflineCauseReason() != Config.offlineReasonStr) {
+      println('Skipping worker not offlined by this script ' + aSlave.name);
+      continue
+    }
+    if (c.countBusy() == 0) {
+      println('Deleting: ' + aSlave.name);
+      c.doDoDelete();
+    } else {
+      println('Not deleting: ' + aSlave.name + ' yet. countBusy: ' + c.countBusy());
+    }
+  }
+}
+
+@NonCPS
+def putWorkerOffline() {
+  // Pick the oldest node to be set offline.
+  // It will have time to drain and be deleted in one of the next runs.
+
+  def selected = null
+  def lowestConnectTime = 999999999999999
+  def onlineWorkersCount = 0
+  for (aSlave in hudson.model.Hudson.instance.slaves) {
+    onlineWorkersCount += 1
+    def c = aSlave.getComputer()
+    if (c.isOnline()) {
+      if (c.getConnectTime() < lowestConnectTime) {
+        selected = aSlave
+        lowestConnectTime = c.getConnectTime()
+      }
+    }
+  }
+  if (onlineWorkersCount > Config.onlineWorkersThreshold) {
+    println('setting node offline: ' + selected.name)
+    selected.getComputer().setTemporarilyOffline(
+        true,
+        new hudson.slaves.OfflineCause.ByCLI(Config.offlineReasonStr)
+    )
+  } else {
+    println('not enough online workers: ' + onlineWorkersCount +
+    '  threshold: ' + Config.onlineWorkersThreshold)
+  }
+}
+
+stage('Run') {
+  deleteOfflineNodes()
+  putWorkerOffline()
+}

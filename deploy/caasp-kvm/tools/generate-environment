@@ -1,0 +1,54 @@
+#!/bin/bash
+set -eu
+
+DIR="$( cd "$( dirname "$0" )" && pwd )"
+
+# environment file, provided as the first argument
+ENVIRONMENT=${1:-${ENVIRONMENT:-"$DIR/../environment.json"}}
+
+# ssh key file
+SSH_KEY=${SSH_KEY:-$DIR/../../misc-files/id_shared}
+
+# terraform state file
+TF_STATE=${TF_STATE:-$DIR/../terraform.tfstate}
+
+##############################################################
+
+SSH_ARGS="-i $SSH_KEY \
+         -o UserKnownHostsFile=/dev/null \
+         -o StrictHostKeyChecking=no"
+
+command -v jq >/dev/null || {
+    echo "ERROR: jq is not installed - please install jq to generate the environment.json file"
+    exit 1
+}
+
+# make sure the ssh key is readable
+[ -f "$SSH_KEY" ] || { echo "No ssh key found at $SSH_KEY" ; exit 1 ; }
+chmod 600 "$SSH_KEY"
+
+echo "Generating $ENVIRONMENT file"
+out=$(cat $TF_STATE | \
+    jq ".modules[].resources[] | select(.type==\"libvirt_domain\") | .primary | .attributes | { fqdn: .metadata | split(\",\") | .[0], addresses: {publicIpv4: .[\"network_interface.0.addresses.0\"], privateIpv4: .[\"network_interface.0.addresses.0\"]}, role: .metadata | split(\",\") | .[1], index: .metadata | split(\",\") | .[2], status: \"unused\" } " | jq -s . | jq "{minions: .}")
+
+for node in $(echo "$out" | jq -r '.minions[] | select(.["minion_id"]? == null) | [.addresses.publicIpv4] | join(" ")'); do
+    machine_id=$(ssh root@$node $SSH_ARGS cat /etc/machine-id)
+    out=$(echo "$out" | jq ".minions | map(if (.addresses.publicIpv4 == \"$node\") then . + {\"minionID\": \"$machine_id\"} else . end) | {minions: .}")
+    fqdn=$(echo $out | jq -r ".minions[] | select(.addresses.publicIpv4 == \"$node\") | .fqdn")
+    ip=$(dig +short $fqdn)
+    # only set the reverse DNS as fqdn if the old fqdn does not resolve to the node IP
+    if [ "$ip" != "$node" ]; then
+        machine_reverse_dns=$(dig +short -x $node)
+        if [ -n "$machine_reverse_dns" ]; then
+            out=$(echo "$out" | jq ".minions | map(if (.addresses.publicIpv4 == \"$node\") then . + {\"fqdn\": \"$machine_reverse_dns\"} else . end) | {minions: .}")
+        else
+            echo "WARNING: the fqdn for node $fqdn ($node) does not resolve."
+        fi
+    fi
+done
+
+masters=$(echo "$out" | jq -r '[.minions[] | select(.role=="master")] | length')
+
+out=$(echo "$out" | jq " . + {dashboardHost: .minions[] | select(.role==\"admin\") | .addresses.publicIpv4, dashboardExternalHost: .minions[] | select(.role==\"admin\") | .fqdn, kubernetesExternalHost: \"kube-api-x${masters}.devenv.caasp.suse.net\"}")
+out=$(echo "$out" | jq " . + {sshKey: \"$SSH_KEY\", sshUser: \"root\"}")
+echo "$out" | tee "$ENVIRONMENT"

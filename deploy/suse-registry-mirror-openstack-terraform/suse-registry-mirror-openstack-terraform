@@ -1,0 +1,87 @@
+#!/bin/bash
+
+log()   { echo ">>> $1" ; }
+warn()  { log "WARNING: $1" ; }
+abort() { log "$1" ; exit 1 ; }
+
+USAGE=$(cat <<USAGE
+USAGE:
+
+  Before running ses-openstack script:
+
+  1. Use openrc.sh OpenStack file and
+
+     # source openrc.sh 
+
+    or manually export following variables
+
+  # export OS_AUTH_URL - OpenStack Identity API v3
+  # export OS_USER_DOMAIN_NAME - OpenStack Domain Name
+  # export OS_PROJECT_NAME - OpenStack Project Name
+  # export OS_REGION_NAME - OpenStack Region Name
+  # export OS_USERNAME - OpenStack User Name
+  # export OS_PASSWORD - OpenStack User Password
+
+  2. Edit openstack.tfvars file and provide following options
+
+  * image_name - SLES JEOS OpenStack Image Name
+  * network_name - OpenStack Private Network
+  * admin_size - SLES JEOS OpenStack Flavour
+  * sles_base - sles base repo
+  * sles_update - sles update repo
+  * containers_module_base - sles containers base module
+  * containers_module_update - sles containers update module
+  * https - can be true or false (true triggers a https self signed certificate suse registry mirror, false triggers http suse registry mirror)
+  * fqdn needed by the dns recordset resource
+
+  3. Run suse-registry-mirror-openstack with following action:
+
+  # sus-registry-mirror-openstack apply - deploy suse registry mirror application
+  # sus-registry-mirror-openstack refresh - suse registry mirror resources
+  # sus-registry-mirror-openstack plan - suse registry mirror update
+  # sus-registry-mirror-openstack cleanup - suse registry mirror installation  
+  # sus-registry-mirror-openstack show - suse registry mirror ip addresses
+  # sus-registry-mirror-openstack show - suse registry mirror deployment
+  
+<<<
+USAGE
+)
+
+if [ $# -eq 1 ]; then
+  case $1 in
+    apply|output|show|plan|refresh|destroy)
+      COMMAND=$1
+      ;;
+    *)
+      abort "$USAGE"
+      ;; 
+  esac
+else 
+  abort "$USAGE"
+fi
+
+[ -d ssh ] || mkdir ssh
+
+if ! [ -f ssh/id_suse-registry-mirror ]; then
+  ssh-keygen -b 2048 -t rsa -f ssh/id_suse-registry-mirror -N ""
+fi
+
+if [ -v $OS_AUTH_URL ] || [ -v $OS_PROJECT_NAME ] || \
+    [ -v $OS_USER_DOMAIN_NAME ] ||  [ -v $OS_USERNAME ] || \
+    [ -v $OS_REGION_NAME ]; then
+  abort "$USAGE"
+fi
+
+echo ""
+echo "OpenStack endpoint $OS_AUTH_URL"
+echo ""
+
+if [ -v $OS_PASSWORD ]; then
+  echo "Please enter your OpenStack Password: "
+  read -sr OS_PASSWORD_INPUT
+  export OS_PASSWORD=$OS_PASSWORD_INPUT
+fi
+
+terraform $COMMAND -var auth_url=$OS_AUTH_URL -var domain_name=$OS_USER_DOMAIN_NAME \
+                    -var region_name=$OS_REGION_NAME -var project_name=$OS_PROJECT_NAME \
+                    -var user_name=$OS_USERNAME -var password=$OS_PASSWORD -var-file=openstack.tfvars

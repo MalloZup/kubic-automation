@@ -1,0 +1,28 @@
+{
+  "baseurl": {
+    "devel": {
+      "default": "http://download.suse.de/ibs/Devel:/CASP:/Head:/ControllerNode/",
+      "provo": "http://mirror.caasp.suse.net/ibs/Devel:/CASP:/Head:/ControllerNode/"
+    },
+    "devel_15": {
+      "default": "http://download.suse.de/ibs/Devel:/CASP:/Head:/ControllerNode/",
+      "provo": "http://mirror.caasp.suse.net/ibs/Devel:/CASP:/Head:/ControllerNode/"
+    },
+    "sandbox": {
+      "default": "http://download.suse.de/ibs/Devel:/CASP:/SandBox/"
+    },
+    "kubic": {
+      "default": "http://download.opensuse.org/repositories/devel:/CaaSP:/images/"
+    },
+    "release": {
+      "default": "http://download.suse.de/ibs/SUSE:/SLE-12-SP3:/Update:/Products:/CASP30/"
+    },
+    "staging_a": {
+      "default": "http://download.suse.de/ibs/SUSE:/SLE-12-SP3:/Update:/Products:/CASP30:/Staging:/A/"
+    },
+    "staging_b": {
+      "default": "http://download.suse.de/ibs/SUSE:/SLE-12-SP3:/Update:/Products:/CASP30:/Staging:/B/"
+    }
+  },
+  "format_version": 2
+}

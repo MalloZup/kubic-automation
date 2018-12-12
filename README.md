@@ -1,11 +1,17 @@
-# kubic-automation
-This project will be the CI version 2.0 for the kubic project.
+# Kubic-automation
 
-It will inherit from this on https://github.com/kubic-project/automation
+Welcome to kubic-automation.
+
+- [deploy](deploy/README.md) contains all deployment logic
+
+- [tests](tests/README.md) contains tests for the infrastructure
 
 # Roadmap:
 
-- better architecture.
-- move pipelines to ci.suse.de
-- refactoring
-- remove jenkins-internal logic on pipelines.
+See issues on this repo
+
+## Tools repo:
+
+the tools repo is going to be removed. We should move this tools either in deploy/tools or tests/tools/, not global
+
+- `tools` contains tools 

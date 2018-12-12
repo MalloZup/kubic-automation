@@ -1,0 +1,42 @@
+library "kubic-jenkins-library@${env.BRANCH_NAME}"
+
+// This pipeline runs daily end-to-end tests by deploying an ISO on Bare Metal
+
+// Configure the build properties
+properties([
+    buildDiscarder(logRotator(numToKeepStr: '31', daysToKeepStr: '31')),
+    disableConcurrentBuilds(),
+    pipelineTriggers([cron('H H(3-5) * * *')]),
+    parameters([
+        string(name: 'MASTER_COUNT', defaultValue: '1', description: 'Number of Master Nodes'),
+        string(name: 'WORKER_COUNT', defaultValue: '3', description: 'Number of Worker Nodes'),
+        booleanParam(name: 'ENVIRONMENT_DESTROY', defaultValue: true, description: 'Destroy env once done?')
+    ])
+])
+
+coreKubicProjectPeriodic(
+    // Prefer m1.large workers, fallback to any leap15.0 worker.
+    nodeLabel: 'leap15.0&&m1.large||leap15.0',
+    environmentType: 'bare-metal',
+    environmentDestroy: env.ENVIRONMENT_DESTROY.toBoolean(),
+    masterCount: env.MASTER_COUNT.toInteger(),
+    workerCount: env.WORKER_COUNT.toInteger()
+) {
+    // empty preBootstrapBody
+} {
+    // Run through the upgrade orchestration
+    upgradeEnvironmentStage1(
+        environment: environment,
+        fakeUpdatesAvailable: true
+    )
+
+    upgradeEnvironmentStage2(
+        environment: environment
+    )
+
+    // Run the Core Project Tests again
+    coreKubicProjectTests(
+        environment: environment,
+        podName: 'default'
+    )
+}

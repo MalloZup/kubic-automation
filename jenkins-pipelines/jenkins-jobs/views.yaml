@@ -1,0 +1,26 @@
+# Views
+- view:
+    name: All Integration Builds
+    view-type: list
+    columns:
+        - status
+        - weather
+        - job
+        - last-success
+        - last-failure
+        - last-duration
+    recurse: true
+    regex: .*\.integration/.*
+
+- view:
+    name: All Housekeeping Builds
+    view-type: list
+    columns:
+        - status
+        - weather
+        - job
+        - last-success
+        - last-failure
+        - last-duration
+    recurse: true
+    regex: .*\.housekeeping/.*

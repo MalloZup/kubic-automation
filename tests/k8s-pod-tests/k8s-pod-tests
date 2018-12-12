@@ -1,0 +1,244 @@
+#!/bin/bash
+
+set -euo pipefail
+
+DIR="$( cd "$( dirname "$0" )" && pwd )"
+
+# options
+ACTION=""
+KUBECONFIG_FN=
+
+# options with a default value
+WAIT=false
+ENVIRONMENT=${CAASP_ENVIRONMENT:-$DIR/../caasp-kvm/environment.json}
+SCALESTEP=10
+SCALESTEP_TIMEOUT=600
+NUM_REPLICAS=20
+
+USAGE=$(cat <<USAGE
+Usage:
+
+  * List pods
+
+    -l|--list                                      List running pods
+
+  * Creating a pod
+
+    -c|--create          <MANIFEST_FNAME>          Create a pod using a manifest file
+
+  * Deleting a pod
+
+    -d|--delete          <MANIFEST_FNAME>          Delete a pod using a manifest file
+
+  * Scaling up a pod
+
+    -s|--scale           <PODNAME>                 Instantly set a number of replicas for a pod
+    --slowscale          <PODNAME>                 Scale *up* to a number of replicas over time
+        --step           <NUM>                     Optional: scaleup step size (default: 10)
+        [-w|--wait]                                Optional: wait for replicas to become available
+        --step-timeout   <SECONDS>                 Timeout in seconds for each scaleup step (default: 60)
+    --numreplicas        <NUM>                     Number of replicas (used with --scale or --slowscale) (default: 20)
+
+
+* General Options
+
+    -e|--environment     <FNAME>                   Set path to environment.json
+    -k|--kubeconfig      <FNAME>                   'kubeconfig' file path (defaults to value from environment.json)
+
+  * Examples:
+
+  $0 -l
+  $0 --create default
+
+Requirements:
+ - 'kubeconfig' file
+ - 'kubectl' executable in path
+ 
+USAGE
+)
+
+# Utility methods
+log()        { (>&2 echo ">>> [caasp-stack] $@") ; }
+warn()       { log "WARNING: $@" ; }
+error()      { log "ERROR: $@" ; exit 1 ; }
+check_file() { if [ ! -f $1 ]; then error "File $1 doesn't exist!"; fi }
+
+# parse options
+while [[ $# > 0 ]] ; do
+  case $1 in
+    -l|--list)
+      ACTION="list"
+      ;;
+    -c|--create)
+      ACTION="create"
+      MANIFEST_FNAME="$2"
+      shift
+      ;;
+    -d|--delete)
+      ACTION="delete"
+      MANIFEST_FNAME="$2"
+      shift
+      ;;
+
+    -s|--scale)
+      ACTION="scale"
+      NAME="$2"
+      shift
+      ;;
+    --slowscale)
+      ACTION="slowscale"
+      NAME="$2"
+      shift
+      ;;
+    --step)
+      SCALESTEP="$2"
+      shift
+      ;;
+    --step-timeout)
+      SCALESTEP_TIMEOUT="$2"
+      shift
+      ;;
+    -w|--wait)
+      WAIT=true
+      ;;
+    --numreplicas)
+      NUM_REPLICAS="$2"
+      shift
+      ;;
+
+    -e|--environment)
+      ENVIRONMENT="$2"
+      shift
+      ;;
+    -k|--kubeconfig)
+      KUBECONFIG_FN="$2"
+      shift
+      ;;
+    -h|--help)
+      echo "$USAGE"
+      exit 0
+      ;;
+  esac
+  shift
+done
+
+# Determine Kubeconfig path
+KUBECONFIG_FN=${KUBECONFIG_FN:-$(cat $ENVIRONMENT | jq -r ".kubeConfig.admin")}
+
+# Core methods
+
+list_pods() {
+  kubectl get pods --kubeconfig="$KUBECONFIG_FN"
+}
+
+wait_until_available_num() {
+  # Requires $target_num $timeout
+  target_num=$1
+  timeout=$2
+  for elapsed in $(seq 0 $2); do
+    echo "[$elapsed / $timeout] checking..."
+    current_available_num=$( get_deployments | awk '{print $5}' )
+    echo "current: $current_available_num"
+    [[ $current_available_num -eq "$target_num" ]] && return
+    echo "not ready yet"
+    sleep 1
+  done
+  echo "ERROR: $current_available_num instances running. Expected: $target_num"
+  return 1
+}
+
+create_pod() {
+  kubectl apply -f $MANIFEST_FNAME --kubeconfig="$KUBECONFIG_FN"
+}
+
+delete_pod() {
+  kubectl delete -f $MANIFEST_FNAME --kubeconfig="$KUBECONFIG_FN"
+}
+
+scale_pod() {
+  # set number of replicas instantly
+  kubectl scale --replicas=$NUM_REPLICAS --kubeconfig="$KUBECONFIG_FN" deployment/$NAME
+  [[ "$WAIT" = false ]] && return
+  wait_until_available_num $NUM_REPLICAS $SCALESTEP_TIMEOUT
+}
+
+get_rs() {
+  kubectl --kubeconfig="$KUBECONFIG_FN" get replicasets -owide --no-headers
+}
+
+get_deployments() {
+  kubectl --kubeconfig="$KUBECONFIG_FN" get deployments $NAME -owide --no-headers
+}
+
+show_pod() {
+  kubectl --kubeconfig="$KUBECONFIG_FN" get pod $NAME
+}
+
+scale_pod_in_steps_adaptive() {
+  # currently unused
+  cycle_time=5
+  eta=$(( $(date +%s) + $INTERVAL ))
+  # start from the currently *available* number
+  current_num=$( get_deployments | awk '{print $5}' )
+  echo "Current desired value: $current_num"
+
+  while true; do
+    remaining_time=$(( $eta - $(date +%s) ))
+    if [ $remaining_time -gt $cycle_time ]; then
+      step=$(( ($NUM_REPLICAS - $current_num) * $cycle_time / $remaining_time ))
+    else
+      step=$(( $NUM_REPLICAS - $current_num ))
+    fi
+    current_num=$(( $current_num + $step ))
+    echo "Setting replicas to $current_num"
+    kubectl scale --replicas=$current_num --kubeconfig="$KUBECONFIG_FN" deployment/$NAME
+    [[ "$WAIT" = true ]] && wait_until_available_num $current_num 60 && echo OK
+
+    [[ $current_num == $NUM_REPLICAS ]] && return
+    sleep $cycle_time
+
+  done
+}
+
+scale_pod_in_steps() {
+  # start from the currently *available* number
+  current_num=$( get_deployments | awk '{print $5}' )
+
+  while [[ $current_num -lt $NUM_REPLICAS ]]; do
+    new_num=$(( $current_num + $SCALESTEP ))
+    if [ $new_num -gt $NUM_REPLICAS ]; then
+      new_num=$NUM_REPLICAS
+    fi
+    echo "Setting replicas to $new_num"
+    kubectl scale --replicas=$new_num --kubeconfig="$KUBECONFIG_FN" deployment/$NAME
+    [[ "$WAIT" = true ]] && wait_until_available_num $new_num $SCALESTEP_TIMEOUT
+    current_num=$new_num
+  done
+}
+
+
+# main
+
+case "$ACTION" in
+  list)
+    list_pods
+    ;;
+  create)
+    create_pod
+    ;;
+  delete)
+    delete_pod
+    ;;
+  scale)
+    scale_pod
+    ;;
+  slowscale)
+    scale_pod_in_steps
+    ;;
+  *)
+    echo "$USAGE"
+    exit 1
+    ;;
+esac
+
+log "Done"

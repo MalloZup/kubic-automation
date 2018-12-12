@@ -1,0 +1,90 @@
+{
+    "date":  "20180417173641",
+    "config":  {
+                   "workerRam":  "2048mb",
+                   "adminCloudInit":  "C:\\hyperv\\caasp-hyperv-automation\\caasp-hyperv\\cloud-init.adm",
+                   "adminRam":  "8192mb",
+                   "vhdStoragePath":  "C:\\hyperv\\vhd\\suse",
+                   "nodeCloudInit":  "C:\\hyperv\\caasp-hyperv-automation\\caasp-hyperv\\cloud-init.cls",
+                   "adminNode":  "caasp-admin-suse",
+                   "masterNodePrefix":  "caasp-master",
+                   "masterCpu":  "2",
+                   "action":  "deploy",
+                   "Force":  {
+                                 "IsPresent":  true
+                             },
+                   "masterRam":  "4096mb",
+                   "workerNodePrefix":  "caasp-worker",
+                   "adminCpu":  "4",
+                   "vmSwitch":  "HVCSSVMSW",
+                   "caaspImageSourceUrl":  "",
+                   "caaspImage":  "SUSE-CaaS-Platform-2.0-for-MS-HyperV.x86_64-2.0.0-GM",
+                   "masterNode":  "caasp-master-suse",
+                   "workerCpu":  "1",
+                   "workers":  "2",
+                   "imageStoragePath":  "C:\\hyperv\\images",
+                   "masters":  "1",
+                   "imagePath":  "C:\\hyperv\\images\\SUSE-CaaS-Platform-2.0-for-MS-HyperV.x86_64-2.0.0-GM.vhd",
+                   "workerNode":  "caasp-worker-suse",
+                   "computeHosts":  "QACSS-HVCORE23,QACSS-HVCORE24,QACSS-HVCORE25",
+                   "nodeTotal":  4,
+                   "vmVlanId":  "1296",
+                   "hvStateFile":  "C:\\hyperv\\caasp-hyperv-automation\\caasp-hyperv\\caasp-hyperv-suse.hvstate",
+                   "adminNodePrefix":  "caasp-admin",
+                   "stackName":  "suse"
+               },
+    "vmguests":  [
+                     {
+                         "index":  "0",
+                         "name":  "caasp-admin-suse000",
+                         "id":  "64774c83-f9af-4043-ab9a-577bdb44ea23",
+                         "role":  "admin",
+                         "publicipv4":  "10.84.152.231",
+                         "fqdn":  "vm152231.qa.prv.suse.net",
+                         "hypervhost":  "QACSS-HVCORE25",
+                         "image":  "SUSE-CaaS-Platform-2.0-for-MS-HyperV.x86_64-2.0.0-GM",
+                         "harddrive":  "C:\\hyperv\\vhd\\suse\\caasp-admin-suse000.vhd",
+                         "ram":  "8192mb",
+                         "cpu":  "4"
+                     },
+                     {
+                         "index":  "1",
+                         "name":  "caasp-master-suse000",
+                         "id":  "b2a88168-4ea6-4edd-b4ac-30b214690c5a",
+                         "role":  "master",
+                         "publicipv4":  "10.84.153.156",
+                         "fqdn":  "vm153156.qa.prv.suse.net",
+                         "hypervhost":  "QACSS-HVCORE23",
+                         "image":  "SUSE-CaaS-Platform-2.0-for-MS-HyperV.x86_64-2.0.0-GM",
+                         "harddrive":  "C:\\hyperv\\vhd\\suse\\caasp-master-suse000.vhd",
+                         "ram":  "4096mb",
+                         "cpu":  "2"
+                     },
+                     {
+                         "index":  "2",
+                         "name":  "caasp-worker-suse000",
+                         "id":  "38d6bcc4-bb8f-42dd-9795-1525be5f078e",
+                         "role":  "worker",
+                         "publicipv4":  "10.84.153.57",
+                         "fqdn":  "vm153057.qa.prv.suse.net",
+                         "hypervhost":  "QACSS-HVCORE24",
+                         "image":  "SUSE-CaaS-Platform-2.0-for-MS-HyperV.x86_64-2.0.0-GM",
+                         "harddrive":  "C:\\hyperv\\vhd\\suse\\caasp-worker-suse000.vhd",
+                         "ram":  "2048mb",
+                         "cpu":  "1"
+                     },
+                     {
+                         "index":  "3",
+                         "name":  "caasp-worker-suse001",
+                         "id":  "4aeaddc1-75eb-49ce-a008-9dea8835fccd",
+                         "role":  "worker",
+                         "publicipv4":  "10.84.153.213",
+                         "fqdn":  "vm153213.qa.prv.suse.net",
+                         "hypervhost":  "QACSS-HVCORE23",
+                         "image":  "SUSE-CaaS-Platform-2.0-for-MS-HyperV.x86_64-2.0.0-GM",
+                         "harddrive":  "C:\\hyperv\\vhd\\suse\\caasp-worker-suse001.vhd",
+                         "ram":  "2048mb",
+                         "cpu":  "1"
+                     }
+                 ]
+}

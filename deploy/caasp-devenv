@@ -1,0 +1,330 @@
+#!/bin/sh
+#
+# READ THIS BEFORE ADDING ANYTHING HERE.
+#
+# This script should remain as simple as possible, with
+# options only for the most commonly used options of the
+# tools it orchestrates. If it's not something most
+# developers would use at least once a week, then it doesn't
+# belong here.
+#
+# This script should be as dumb as possible, it should
+# contain the most commonly used options for each of the
+# other tools, and no more. If you need to customize the
+# options for a tool, use that tool directly instead!
+
+set -euo pipefail
+
+DIR="$( cd "$( dirname "$0" )" && pwd )"
+
+# options
+RUN_SETUP=
+RUN_BUILD=
+RUN_UPDATE_DEPLOYMENT=
+RUN_BOOTSTRAP=
+RUN_TESTINFRA=
+RUN_DESTROY=
+RUN_PLAN=
+
+ACTION=
+MASTERS=${CAASP_NUM_MASTERS:-1}
+WORKERS=${CAASP_NUM_WORKERS:-2}
+IMAGE=${CAASP_IMAGE:-channel://devel}
+VANILLA=${CAASP_VANILLA:-}
+DISABLE_MELTDOWN_SPECTRE=${CAASP_DISABLE_MELTDOWN_SPECTRE:-}
+PROXY=${CAASP_HTTP_PROXY:-}
+LOCATION=${CAASP_LOCATION:-}
+PARALLELISM=${CAASP_PARALLELISM:-1}
+ENABLE_TILLER=${CAASP_ENABLE_TILLER:-false}
+EXTRA_REPO=${CAASP_EXTRA_REPO:-}
+
+EARLY_DIST_PACKAGES="lsb-release"
+DIST_PACKAGES="jq \
+               python-tox \
+               python-devel \
+               python-requests \
+               libsodium-devel \
+               python-openstackclient \
+               python-novaclient \
+               python-heatclient \
+               terraform \
+               ruby-devel \
+               gcc \
+               make \
+               terraform-provider-libvirt \
+               guestfs-tools \
+               qemu-kvm \
+               docker \
+               libvirt-daemon-qemu \
+               guestfs-tools \
+               git \
+               ca-certificates-suse"
+
+# kubic-project needed repos to clone via https on build(sep by 1 space)
+KUBIC_NEEDED_GITHUB_REPOS="caasp-container-manifests velum salt"
+
+USAGE=$(cat <<USAGE
+Usage:
+
+  * Setup your workstation
+
+    --setup                     Install Dev Env Dependencies
+
+  * Building a cluster
+
+    -b|--build                       Run the CaaSP KVM Build Step
+    -m|--masters <INT>               Number of masters to build (Default: CAASP_NUM_MASTERS)
+    -w|--workers <INT>               Number of workers to build (Default: CAASP_NUM_WORKERS)
+    -u|--update-deployment           Update Terraform deployment (Default: false)
+    -d|--destroy                     Run the CaaSP KVM Destroy Step
+    -i|--image                       Image to use (Default: CAASP_IMAGE)
+    --vanilla                        Do not inject devenv code, use vanilla caasp (Default: false)
+    --disable-meltdown-spectre-fixes Disable meltdown and spectre fixes (Default: false)
+    --enable-tiller                  Enable Helm Tiller
+
+  * Bootstraping a cluster
+
+    Velum Username: test@test.com
+    Velum Password: password
+
+    -B|--bootstrap              Bootstrap CaaSP cluster
+
+  * Testing a cluster
+
+    -T|--testinfra              Run testinfra tests
+
+  * Common options
+
+    -p|--parallelism            Set terraform parallelism (Default: CAASP_PARALLELISM)
+    -P|--proxy                  Set HTTP Proxy (Default: CAASP_HTTP_PROXY)
+    -L|--location               Set location used for downloads (Default: CAASP_LOCATION or 'default')
+
+  * Advanced Options
+
+    --plan                      Run the CaaSP KVM Plan Step
+    --extra-repo <STR>          URL of a custom repository on the master(s)/worker(s) (Default: CAASP_EXTRA_REPO)
+
+  * Examples:
+
+  Build, Bootstrap and Test a cluster
+
+  $0 --build -m 1 -w 2 --bootstrap --testinfra
+
+  Bootstrap and Test a pre-made cluster
+
+  $0 --bootstrap --testinfra
+
+  Build a 1 master, 2 worker cluster using the latest kubic image
+
+  $0 --build -m 1 -w 2 --image channel://kubic
+
+  Add a worker node to a running cluster
+
+  $0 --update-deployment -m 1 -w 3
+
+  Build a cluster and add a custom repository on the master/worker(s)
+
+  $0 --build -m 1 -w 2 --extra-repo https://download.opensuse.org/repositories/devel:/CaaSP:/Head:/ControllerNode:/TestUpdates
+
+USAGE
+)
+
+# Utility methods
+log()        { (>&2 echo ">>> [caasp-devenv] $@") ; }
+warn()       { log "WARNING: $@" ; }
+error()      { log "ERROR: $@" ; exit 1 ; }
+check_file() { [ -f "$1" ] || error "File $1 doesn't exist!" ; }
+usage()      { echo "$USAGE" ; exit 0 ; }
+
+# clone needed github repos (dependencies)
+clone_needed_github_repos() {
+  git_repos="$1"
+  pushd $DIR/../
+  for git_repo in $git_repos; do
+  	if [ ! -d "$git_repo" ]; then
+             git clone "https://github.com/kubic-project/$git_repo.git"
+        fi
+  done
+  popd
+} 
+
+
+# parse options
+while [[ $# > 0 ]] ; do
+  case $1 in
+    --setup)
+      ACTION=1
+      RUN_SETUP=1
+      ;;
+    -b|--build)
+      ACTION=1
+      RUN_BUILD=1
+      ;;
+    -m|--masters)
+      MASTERS="$2"
+      shift
+      ;;
+    -w|--workers)
+      WORKERS="$2"
+      shift
+      ;;
+    -d|--destroy)
+      ACTION=1
+      RUN_DESTROY=1
+      ;;
+    -u|--update-deployment)
+      ACTION=1
+      RUN_UPDATE_DEPLOYMENT=1
+      ;;
+    -i|--image)
+      IMAGE="$2"
+      shift
+      ;;
+    --vanilla)
+      VANILLA="true"
+      ;;
+    --disable-meltdown-spectre-fixes)
+      DISABLE_MELTDOWN_SPECTRE="true"
+      ;;
+    --enable-tiller)
+      ENABLE_TILLER=true
+      ;;
+    -B|--bootstrap)
+      ACTION=1
+      RUN_BOOTSTRAP=1
+      ;;
+    -T|--testinfra)
+      ACTION=1
+      RUN_TESTINFRA=1
+      ;;
+    -p|--parallelism)
+      PARALLELISM="$2"
+      shift
+      ;;
+    -P|--proxy)
+      PROXY="$2"
+      shift
+      ;;
+    -L|--location)
+      LOCATION="$2"
+      shift
+      ;;
+    --plan)
+      ACTION=1
+      RUN_PLAN=1
+      ;;
+    --extra-repo)
+      EXTRA_REPO="$2"
+      shift
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      log "Invalid option: $1"
+      usage
+      ;;
+  esac
+  shift
+done
+
+##############################################################
+
+CAASP_KVM_ARGS="-m $MASTERS -w $WORKERS --image $IMAGE"
+[ -n "$PARALLELISM" ] && CAASP_KVM_ARGS="$CAASP_KVM_ARGS --parallelism $PARALLELISM"
+[ -n "$PROXY"       ] && CAASP_KVM_ARGS="$CAASP_KVM_ARGS --proxy $PROXY"
+[ -n "$LOCATION"    ] && CAASP_KVM_ARGS="$CAASP_KVM_ARGS --location $LOCATION"
+[ -n "$VANILLA"     ] && CAASP_KVM_ARGS="$CAASP_KVM_ARGS --vanilla"
+[ -n "$DISABLE_MELTDOWN_SPECTRE" ] && CAASP_KVM_ARGS="$CAASP_KVM_ARGS --disable-meltdown-spectre-fixes"
+[ -n "$EXTRA_REPO"  ] && CAASP_KVM_ARGS="$CAASP_KVM_ARGS --extra-repo $EXTRA_REPO"
+
+export ENVIRONMENT="$DIR/caasp-kvm/environment.json"
+
+# Core methods
+setup() {
+  log "Installing CaaSP Development Environment Requiemnts"
+  sudo zypper in --no-confirm --auto-agree-with-licenses $EARLY_DIST_PACKAGES
+
+  local dist=$(lsb-release -sd | tr -d '"' | tr " " "_")
+
+  if ! zypper lr -dU | grep --quiet "suse.de/ibs/SUSE:/CA" ; then
+    log "Adding SUSE:CA Zypper repo"
+    sudo zypper ar "http://download.suse.de/ibs/SUSE:/CA/${dist}/SUSE:CA.repo"
+    sudo zypper --gpg-auto-import-keys ref SUSE_CA
+  fi
+
+  if ! zypper lr -dU | grep --quiet "suse.de/ibs/Devel:/CASP:/CI" ; then
+    log "Adding Devel:CASP:CI Zypper repo"
+    sudo zypper ar "http://download.suse.de/ibs/Devel:/CASP:/CI/${dist}/Devel:CASP:CI.repo"
+    sudo zypper --gpg-auto-import-keys ref Devel_CASP_CI
+  fi
+
+  if ! zypper lr -dU | grep --quiet "opensuse.org/repositories/systemsmanagement:/terraform:/unstable" ; then
+    log "Adding systemsmanagement:terraform:unstable Zypper repo"
+    sudo zypper ar -f "http://download.opensuse.org/repositories/systemsmanagement:/terraform:/unstable/${dist}/systemsmanagement:terraform:unstable.repo"
+    sudo zypper --gpg-auto-import-keys ref systemsmanagement_terraform_unstable
+  fi
+
+  sudo zypper in --no-confirm --auto-agree-with-licenses $DIST_PACKAGES
+
+  # Enable and start services, if disabled
+  sudo systemctl enable --now docker
+  sudo systemctl enable --now libvirtd
+
+  # Ensure the current user has access to docker and libvirt
+  sudo usermod -aG docker,libvirt $USER
+
+  # clone needed kubic github repos
+  clone_needed_github_repos "$KUBIC_NEEDED_GITHUB_REPOS"
+
+  (cd "$DIR/velum-bootstrap" && ./velum-interactions --setup)
+
+  warn "You should now logout and back in again, in order for group membership changes to be reflected"
+}
+
+plan() {
+  log "Planning CaaSP KVM Environment"
+  (cd "$DIR/caasp-kvm" && ./caasp-kvm --plan $CAASP_KVM_ARGS )
+}
+
+build() {
+  log "Starting CaaSP KVM Environment"
+  (cd "$DIR/caasp-kvm" && ./caasp-kvm --build $CAASP_KVM_ARGS )
+}
+
+update_deployment() {
+  log "Updating CaaSP KVM Environment"
+  (cd "$DIR/caasp-kvm" && ./caasp-kvm --update-deployment $CAASP_KVM_ARGS )
+}
+
+bootstrap() {
+  log "Bootstrap CaaSP Environment"
+
+  local extra_flags=""
+  if [ "$ENABLE_TILLER" == "true" ]; then
+    extra_flags="$extra_flags --enable-tiller"
+  fi
+
+  [ -f "$ENVIRONMENT" ] || error "no environment file found at $ENVIRONMENT"
+  (cd "$DIR/velum-bootstrap" && ./velum-interactions --configure --bootstrap $extra_flags)
+}
+
+testinfra() {
+  log "Testing CaaSP Environment using testinfra"
+  [ -f "$ENVIRONMENT" ] || error "no environment file found at $ENVIRONMENT"
+  (cd "$DIR/testinfra" && env ENVIRONMENT_JSON="$ENVIRONMENT" tox)
+}
+
+destroy() {
+  log "Destroy CaaSP KVM Environment"
+  (cd "$DIR/caasp-kvm" && ./caasp-kvm --destroy $CAASP_KVM_ARGS)
+}
+
+[ -n "$ACTION" ] || usage
+[ -n "$RUN_SETUP" ] && setup
+[ -n "$RUN_PLAN" ] && plan
+[ -n "$RUN_BUILD" -a -z "$RUN_UPDATE_DEPLOYMENT" ] && build
+[ -n "$RUN_UPDATE_DEPLOYMENT" ] && update_deployment
+[ -n "$RUN_BOOTSTRAP" ] && bootstrap
+[ -n "$RUN_TESTINFRA" ] && testinfra
+[ -n "$RUN_DESTROY" ] && destroy

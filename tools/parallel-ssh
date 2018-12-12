@@ -1,0 +1,11 @@
+#!/bin/bash
+
+set -euo pipefail
+
+$(dirname $0)/setup-python
+
+if [ ! -e /usr/bin/pssh ]; then
+  sudo zypper in --no-confirm pssh
+fi
+
+${WORKSPACE:-~}/py3venv/bin/python3 $(dirname $0)/parallelssh/tool.py $@

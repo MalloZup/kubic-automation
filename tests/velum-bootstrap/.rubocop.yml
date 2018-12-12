@@ -1,0 +1,71 @@
+require:
+  - rubocop-rspec
+
+inherit_from:
+  - .rubocop_todo.yml
+  - .rubocop_suse.yml
+
+Metrics/MethodLength:
+  Max: 50
+
+# Disable the block length cop for tests.
+Metrics/BlockLength:
+  Enabled: true
+  Exclude:
+    - spec/**/*
+
+# It's convenient to mix both. This is something that SUSE's style guide does
+# not specify, so we take the approach that we were following already.
+Style/ClassAndModuleChildren:
+  Enabled: false
+
+Style/SymbolArray:
+  StyleGuide: https://github.com/SUSE/style-guides/blob/master/Ruby.md#stylesymbolarray
+  EnforcedStyle: brackets
+
+Style/WordArray:
+  StyleGuide: https://github.com/SUSE/style-guides/blob/master/Ruby.md#stylewordarray
+  EnforcedStyle: brackets
+
+Layout/EmptyLineAfterMagicComment:
+  Enabled: false
+
+Rails:
+  Enabled: true
+
+# Nope.
+Bundler/OrderedGems:
+  Enabled: false
+
+# This does not happen when testing views.
+RSpec/DescribeClass:
+  Enabled: false
+
+Style/FrozenStringLiteralComment:
+  Enabled: false
+
+# NOTE: drop this when switching to [Rails 5] as it's no longer needed there"
+# https://github.com/bbatsov/rubocop/issues/3629
+Rails/HttpPositionalArguments:
+  Enabled: false
+
+# Sometimes we need more than one "expect" command to build our actual
+# expectation.
+RSpec/MultipleExpectations:
+  Max: 2
+  Exclude:
+    - spec/features/**/*
+
+AllCops:
+  TargetRubyVersion: 2.2
+  TargetRailsVersion: 4.2
+
+  DisplayCopNames: true
+  DisplayStyleGuide: false
+
+  Exclude:
+    # Files that are out of our control and that are not excluded in the
+    # default config of rubocop.
+    - db/schema.rb
+    - db/migrate/*
+    - vendor/**/*

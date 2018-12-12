@@ -1,0 +1,241 @@
+#!/bin/sh
+
+set -euo pipefail
+
+DIR="$( cd "$( dirname "$0" )" && pwd )"
+
+# options
+HAS_ACTION=false
+HAS_INTERACTION=false
+RUN_SETUP=false
+RUN_CONFIGURE=false
+RUN_BOOTSTRAP=false
+RUN_DOWNLOAD_KUBECONFIG=false
+RUN_UPDATE_ADMIN=false
+RUN_UPDATE_MINIONS=false
+RUN_NODE_ADD=false
+RUN_NODE_REMOVE=false
+ENABLE_TILLER=false
+CHOOSE_CRIO=false
+RUN_ADD_REGISTRY=false
+REMOTE_REGISTRY_NAME=${REMOTE_REGISTRY_NAME:-'test-remote-registry'}
+REMOTE_REGISTRY_URL=${REMOTE_REGISTRY_URL:-'http://test-remote-registry.com'}
+
+ENVIRONMENT=${CAASP_ENVIRONMENT:-$DIR/../caasp-kvm/environment.json}
+
+USAGE=$(cat <<USAGE
+Usage:
+
+  * Setup your workstation
+
+    --setup                          Install Dependencies
+
+  * Building a cluster
+
+    -c|--configure                   Configure Velum
+                    --choose-crio    Choose cri-o when configuring Velum
+    -b|--bootstrap                   Bootstrap (implies Download Kubeconfig)
+    -k|--download-kubeconfig         Download Kubeconfig
+    --enable-tiller                  Enable Helm Tiller
+    --registry-add                   Add a remote registry. REMOTE_REGISTRY_{NAME,URL} env vars
+                                     can be overridden to configure the repository added.
+
+  * Updating a cluster
+
+    -a|--update-admin                Update admin node
+    -m|--update-minions              Update masters and workers
+
+  * Manipulating a cluster
+
+    --node-add                       Accepts and bootstraps a node after the initial bootstrap
+    --node-remove                    Removes a node after the initial bootstrap
+
+  * General Options
+
+    -e|--environment                 Set path to environment.json
+
+  * Examples:
+
+  Bootstrap a cluster
+
+  $0 --configure --bootstrap
+
+  Update a cluster
+
+  $0 --update-admin --update-minions
+
+USAGE
+)
+
+# Utility methods
+log()        { (>&2 echo ">>> [velum-bootstrap] $@") ; }
+warn()       { log "WARNING: $@" ; }
+error()      { log "ERROR: $@" ; exit 1 ; }
+check_file() { if [ ! -f $1 ]; then error "File $1 doesn't exist!"; fi }
+
+# Test methods
+is_ci()
+{
+    if [ -f /boot/grub2/grub.cfg ] && sudo grep -q 'jenkins-worker' /boot/grub2/grub.cfg; then
+        echo "This image is generated for Jenkins CI purposes."
+        return
+    fi
+    false
+}
+
+# Velum interaction packages
+which ruby || error "Ruby is not installed"
+ruby_version=$(ruby --version | cut -d ' ' -f2 | cut -d '.' -f1-2)
+INTERACTION_PACKAGES="ruby${ruby_version}-rubygem-bundler \
+                      ruby${ruby_version}-devel \
+                      phantomjs \
+                      libxml2-devel \
+                      libxslt-devel"
+
+# parse options
+while [[ $# > 0 ]] ; do
+  case $1 in
+    --setup)
+      RUN_SETUP=true
+      HAS_ACTION=true
+      ;;
+    -c|--configure)
+      RUN_CONFIGURE=true
+      HAS_INTERACTION=true
+      HAS_ACTION=true
+      ;;
+    -b|--bootstrap)
+      RUN_BOOTSTRAP=true
+      RUN_DOWNLOAD_KUBECONFIG=true
+      HAS_INTERACTION=true
+      HAS_ACTION=true
+      ;;
+    -k|--download-kubeconfig)
+      RUN_DOWNLOAD_KUBECONFIG=true
+      HAS_INTERACTION=true
+      HAS_ACTION=true
+      ;;
+    --enable-tiller)
+      ENABLE_TILLER=true
+      ;;
+    --choose-crio)
+      CHOOSE_CRIO=true
+      ;;
+    -a|--update-admin)
+      RUN_UPDATE_ADMIN=true
+      HAS_INTERACTION=true
+      HAS_ACTION=true
+      ;;
+    -m|--update-minions)
+      RUN_UPDATE_MINIONS=true
+      HAS_INTERACTION=true
+      HAS_ACTION=true
+      ;;
+    --node-add)
+      RUN_NODE_ADD=true
+      HAS_INTERACTION=true
+      HAS_ACTION=true
+      ;;
+    --node-remove)
+      RUN_NODE_REMOVE=true
+      HAS_INTERACTION=true
+      HAS_ACTION=true
+      ;;
+    -e|--environment)
+      ENVIRONMENT="$2"
+      shift
+      ;;
+    --registry-add)
+      RUN_ADD_REGISTRY=true
+      HAS_INTERACTION=true
+      HAS_ACTION=true
+      ;;
+    -h|--help)
+      echo "$USAGE"
+      exit 0
+      ;;
+  esac
+  shift
+done
+
+# Core methods
+setup() {
+  log "Installing Velum Interaction Requirements"
+
+  if is_ci; then
+    if zypper lr > /dev/null; then
+        error "No repositories should be present into the CI environment!"
+    fi
+    rpm -q $INTERACTION_PACKAGES || error "Some packages are not pre-installed into the CI environment."
+  else
+    sudo zypper in --no-confirm --auto-agree-with-licenses $INTERACTION_PACKAGES
+  fi
+
+  bundle install --without=travis_ci --path .bundler
+}
+
+interact() {
+  log "Running Velum Interactions"
+
+  # TODO: Fix the logging throughout the specs to use `documentation` output rather than
+  # `puts`
+  local args="--format documentation --format RspecJunitFormatter --out velum-bootstrap.xml"
+
+  if [ "$RUN_CONFIGURE" = true ]; then
+    args="$args spec/**/01-*"
+  fi
+
+  if [ "$RUN_BOOTSTRAP" = true ]; then
+    args="$args spec/**/02-*"
+  fi
+
+  if [ "$RUN_DOWNLOAD_KUBECONFIG" = true ]; then
+    args="$args spec/**/03-*"
+  fi
+
+  if [ "$RUN_UPDATE_ADMIN" = true ]; then
+    args="$args spec/**/04-*"
+  fi
+
+  if [ "$RUN_UPDATE_MINIONS" = true ]; then
+    args="$args spec/**/05-*"
+  fi
+
+  if [ "$RUN_NODE_ADD" = true ]; then
+    args="$args spec/**/06-*"
+  fi
+
+  if [ "$RUN_NODE_REMOVE" = true ]; then
+    args="$args spec/**/07-*"
+  fi
+
+  if [ "$RUN_ADD_REGISTRY" = true ]; then
+    args="$args spec/**/08-*"
+  fi
+
+  VERBOSE=true ENABLE_TILLER=${ENABLE_TILLER} CHOOSE_CRIO=${CHOOSE_CRIO} ENVIRONMENT=$ENVIRONMENT \
+  REMOTE_REGISTRY_NAME="$REMOTE_REGISTRY_NAME" REMOTE_REGISTRY_URL="$REMOTE_REGISTRY_URL" \
+    bundle exec rspec $args
+
+  if [ "$RUN_DOWNLOAD_KUBECONFIG" = true ]; then
+    local out=$(cat $ENVIRONMENT)
+    out=$(echo "$out" | jq " . + {kubeConfig: {admin: \"$DIR/kubeconfig\"}}")
+    echo "$out" > $ENVIRONMENT
+  fi
+}
+
+# main
+if [ "$HAS_ACTION" != true ]; then
+  echo "$USAGE"
+  error "No action arguments were supplied"
+fi
+
+if [ "$RUN_SETUP" = true ]; then
+  setup
+fi
+
+if [ "$HAS_INTERACTION" = true ]; then
+  interact
+fi
+
+log "Done"

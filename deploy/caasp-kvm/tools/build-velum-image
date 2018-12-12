@@ -1,0 +1,218 @@
+#!/bin/bash
+set -euo pipefail
+
+DIR="$( cd "$( dirname "$0" )" && pwd )"
+
+VELUM_DIR="$1"
+IMAGE="$2"
+
+# the output image
+VELUM_DEVEL_IMAGE="$DIR/../resources/docker-images/velum-development.tar"
+
+# Registry URLs JSON
+REGISTRY_URLS_JSON=$(realpath $DIR/../../misc-files/registry-urls.json)
+
+##################################################################
+
+# Utility methods
+log()        { (>&2 echo ">>> [build-velum-image] $@") ; }
+warn()       { log "WARNING: $@" ; }
+error()      { log "ERROR: $@" ; exit 1 ; }
+
+do_commit() {
+  docker logs -f "$1"
+  docker commit "$1" $IMAGE_DIST/velum:development_wip
+  docker rm "$1"
+}
+
+# Helper function to get the velum-development reference
+# most logic is to dynamically get to the newest tag
+# can be dropped when registry.opensuse.org has a "latest" tag
+kubic_velum_development_reference() {
+  declare BASE_URL
+  declare RELATIVE_PATH
+  REGISTRY_URL=$(jq -r ".baseurl.${IMAGE:10}" $REGISTRY_URLS_JSON | sed 's/\/x86_64//g')
+  IFS="/" read BASE_URL RELATIVE_PATH <<< "$REGISTRY_URL"
+
+  TAGS_URL="https://$BASE_URL/v2/$RELATIVE_PATH/$IMAGE_DIST/velum-development/tags/list"
+
+  TAGS=$(curl -s -D response $TAGS_URL | jq -r '.tags')
+
+  if [[ ! -f response || $(grep '200 OK' response -c) == 0 ]]; then
+    error "cannot get response"
+  fi
+  
+  rm response;
+  
+  # And getting the first tag
+  FIRST_TAG=$(echo $TAGS | jq -r '.[0]')
+  echo $BASE_URL/$RELATIVE_PATH/$IMAGE_DIST/velum-development:${FIRST_TAG}
+}
+
+# get distribution
+if [[ $(basename $IMAGE) =~ [Kk]ubic ]]; then
+  IMAGE_DIST=kubic
+  RUBY_VERSION=ruby2.5
+else
+  IMAGE_DIST=sles12
+  RUBY_VERSION=ruby2.1
+fi
+# Image reference
+if [[ $IMAGE == channel://* ]]; then
+  IMAGE_REFERENCE=$(kubic_velum_development_reference)
+elif [[ $IMAGE == file://* ]]; then
+  IMAGE_REFERENCE=$IMAGE_DIST/velum-development:0.0
+else
+  IMAGE_REFERENCE=$IMAGE
+fi
+
+
+# docker load of the velum-development image tarball
+load_velum_development_image() {
+  log "Loading velum development image"
+  docker rmi $IMAGE_DIST/velum-development:0.0 || : 2> /dev/null
+  docker rmi $IMAGE_DIST/velum:development || : 2> /dev/null
+  docker load -i "${IMAGE:7}"
+}
+
+# docker pull of the velum-development image
+pull_velum_development_image() {
+  log "Pulling velum development image"
+  docker pull $IMAGE_REFERENCE
+}
+
+build_fresh_image() {
+  log "Building velum image with all the required gems"
+  # Reuse the gems already vendored into the devel image if possible.
+  # This will pull only the development gems and the ones changed on master.
+  # This greatly reduces the creation time of the image
+  local CONTAINER_BUILD=`docker run -v $VELUM_DIR:/srv/velum-latest -d $IMAGE_REFERENCE \
+                    bash -c "
+                      cd /srv/velum-latest && \
+                      mkdir -p /var/lib/velum && \
+                      gem install --no-ri --no-rdoc bundler -n /usr/bin && \
+                      bundle.${RUBY_VERSION} config --local frozen 0 && \
+                      bundle.${RUBY_VERSION} config --local build.nokogiri --use-system-libraries && \
+                      bundle.${RUBY_VERSION} install --deployment --binstubs=/usr/local/bin --path=/var/lib/velum && \
+                      cp Gemfile.lock /var/lib/velum/ && \
+                      wget -q https://bitbucket.org/ariya/phantomjs/downloads/phantomjs-2.1.1-linux-x86_64.tar.bz2 -P /opt && \
+                      tar -xjf /opt/phantomjs-2.1.1-linux-x86_64.tar.bz2 -C /opt && \
+                      mv /opt/phantomjs-2.1.1-linux-x86_64/bin/phantomjs /usr/local/bin && \
+                      rm -rf /opt/phantomjs-2.1.1-linux-x86_64"`
+  do_commit "$CONTAINER_BUILD"
+}
+
+patch_schema() {
+  # The only reason for the existence of this patch is a very nasty hack that needs to be removed
+  # as soon as possible.
+  #
+  # It is very closely tied to this patch existence:
+  # https://github.com/kubic-project/velum/blob/master/packaging/suse/patches/1_set_default_salt_events_alter_time_column_value.rpm.patch
+  #
+  # The problem
+  #
+  # We are patching the production schema. But we are mounting the development source code from the
+  # host. So, when we run `bin/init`, the schema that gets loaded is the one on the developers machine,
+  # that of course doesn't contain this patch. Without this patch, the salt-master fails to register
+  # events on the database, due to a missing default value on `alter_time` column.
+  #
+  # The schema salt requires is: https://docs.saltstack.com/en/latest/ref/returners/all/salt.returners.mysql.html
+  #
+  # CREATE TABLE `salt_events` (
+  # `id` BIGINT NOT NULL AUTO_INCREMENT,
+  # `tag` varchar(255) NOT NULL,
+  # `data` mediumtext NOT NULL,
+  # `alter_time` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  # `master_id` varchar(255) NOT NULL,
+  # PRIMARY KEY (`id`),
+  # KEY `tag` (`tag`)
+  # ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+  #
+  # We are handling this table as if it was another Rails managed table, so it's in the Rails schema.
+  #
+  # So far, so good. The main problem is that Rails 4 does not support functions as default values.
+  # This means that if we patch the development environment, after running a migration, or running
+  # `db:schema:dump`, Rails won't recover this default value, and the schema it writes will be wrong.
+  # The good news is that this is fixed in Rails 5.
+  #
+  # Without this patch, salt-master refuses to create new salt events, with the error:
+  #
+  # [ERROR ] Could not store events - returner 'mysql.event_return' raised exception:
+  #          (1364, "Field 'alter_time' doesn't have a default value")
+  #
+  # The solution
+  #
+  # Use the production container that has the production schema (patched). Copy it on `/var/lib/velum`,
+  # since we will mount our source code in `/srv/velum` and the original `/srv/velum/db/schema.rb`
+  # won't be available, and then infect `bin/init` script to run `db:schema:load` with the
+  # `/var/lib/velum/schema.rb` schema if it exists; otherwise run a `db:load` without specifying the
+  # schema (that will take `/srv/velum/db/schema.rb` by default), so we don't break the default
+  # behavior.
+  #
+  # Commit the $IMAGE_DIST/velum:development image again, as if nothing ever happened.
+
+  log "Patching schema of velum image"
+  local CONTAINER_BUILD=`docker run -d $IMAGE_DIST/velum:development_wip cp /srv/velum/db/schema.rb /var/lib/velum`
+  do_commit "$CONTAINER_BUILD"
+}
+
+# Set special environment variables needed to find the gems we vendored
+# into a different location
+# Creates also the sles/velum:latest image
+set_env_variables() {
+  log "Adding special env variables into the final image"
+
+  local TMP_DIR=`mktemp -d`
+  cat << EOF > $TMP_DIR/Dockerfile
+FROM $IMAGE_DIST/velum:development_wip
+ENV BUNDLE_GEMFILE /srv/velum/Gemfile
+ENV BUNDLE_FROZEN 1
+ENV BUNDLE_PATH /var/lib/velum
+ENV BUNDLE_DISABLE_SHARED_GEMS 1
+EOF
+  docker build -t $IMAGE_DIST/velum:development "$TMP_DIR"
+
+  # this image is now useless - it can be untagged
+  docker rmi $IMAGE_DIST/velum:development_wip
+
+  rm -rf "$TMP_DIR"
+}
+
+save_image() {
+  rm -f "$VELUM_DEVEL_IMAGE"
+  docker save $IMAGE_DIST/velum:development -o "$VELUM_DEVEL_IMAGE"
+  chmod 644 "$VELUM_DEVEL_IMAGE"
+  log "Velum image saved to $VELUM_DEVEL_IMAGE"
+}
+
+# Parse args
+USE_CACHE=
+while getopts ":c" opt; do
+  case $opt in
+    c)
+      USE_CACHE=1
+      ;;
+    \?)
+      log "Invalid option: -$OPTARG" >&2
+      ;;
+  esac
+done
+shift $(expr $OPTIND - 1 )
+
+[ -d "$VELUM_DIR" ] || error "Velum directory $VELUM_DIR does not exist"
+[ -n "$USE_CACHE" ] && [ -f "$VELUM_DEVEL_IMAGE" ] && {
+  log "Using prebuilt image"
+  exit 0
+}
+
+if [[ $IMAGE == file://* ]]; then
+  load_velum_development_image
+else
+  pull_velum_development_image
+fi
+build_fresh_image
+
+# FIXME: remove this once we upgrade to Rails 5
+patch_schema
+set_env_variables
+save_image

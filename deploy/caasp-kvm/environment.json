@@ -1,0 +1,56 @@
+{
+  "minions": [
+    {
+      "fqdn": "admin.devenv.caasp.suse.net",
+      "addresses": {
+        "publicIpv4": "10.17.1.0",
+        "privateIpv4": "10.17.1.0"
+      },
+      "role": "admin",
+      "index": "0",
+      "status": "bootstrapped",
+      "minionID": "5760cce3f1ad44b491cc9e9c43f5ed4f"
+    },
+    {
+      "fqdn": "master-0.devenv.caasp.suse.net",
+      "addresses": {
+        "publicIpv4": "10.17.2.0",
+        "privateIpv4": "10.17.2.0"
+      },
+      "role": "master",
+      "index": "0",
+      "status": "bootstrapped",
+      "minionID": "35b29933df6d439788fcb8a0a4ef3f7d"
+    },
+    {
+      "fqdn": "worker-0.devenv.caasp.suse.net",
+      "addresses": {
+        "publicIpv4": "10.17.3.0",
+        "privateIpv4": "10.17.3.0"
+      },
+      "role": "worker",
+      "index": "0",
+      "status": "bootstrapped",
+      "minionID": "cfe1148297f8402ba67adff83391f63b"
+    },
+    {
+      "fqdn": "worker-1.devenv.caasp.suse.net",
+      "addresses": {
+        "publicIpv4": "10.17.3.1",
+        "privateIpv4": "10.17.3.1"
+      },
+      "role": "worker",
+      "index": "1",
+      "status": "bootstrapped",
+      "minionID": "7aea180938324f79a32b08574dde5f62"
+    }
+  ],
+  "dashboardHost": "10.17.1.0",
+  "dashboardExternalHost": "admin.devenv.caasp.suse.net",
+  "kubernetesExternalHost": "kube-api-x1.devenv.caasp.suse.net",
+  "sshKey": "/home/dmaiocchi/bin/automation/caasp-kvm/tools/../../misc-files/id_shared",
+  "sshUser": "root",
+  "kubeConfig": {
+    "admin": "/home/dmaiocchi/bin/automation/velum-bootstrap/kubeconfig"
+  }
+}

@@ -1,0 +1,411 @@
+#!/bin/bash
+
+set -euo pipefail
+
+DIR="$( cd "$( dirname "$0" )" && pwd )"
+
+# options
+ACTION=
+RUN_BUILD=
+RUN_DESTROY=
+RUN_UPDATE_DEPLOYMENT=
+RUN_PLAN=
+
+# caasp or kubic
+DIST=${CAASP_DIST:-caasp}
+
+MASTERS=${CAASP_NUM_MASTERS:-1}
+WORKERS=${CAASP_NUM_WORKERS:-2}
+IMAGE=${CAASP_IMAGE:-channel://devel}
+VELUM_IMAGE=${CAASP_VELUM_IMAGE:-channel://devel}
+VANILLA=${CAASP_VANILLA:-}
+DISABLE_MELTDOWN_SPECTRE=${CAASP_DISABLE_MELTDOWN_SPECTRE:-}
+PROXY=${CAASP_HTTP_PROXY:-}
+LOCATION=${CAASP_LOCATION:-}
+PARALLELISM=${CAASP_PARALLELISM:-1}
+
+CAASP_SALT_DIR=${CAASP_SALT_DIR:-$DIR/../../salt}
+CAASP_MANIFESTS_DIR=${CAASP_MANIFESTS_DIR:-$DIR/../../caasp-container-manifests}
+CAASP_VELUM_DIR=${CAASP_VELUM_DIR:-$DIR/../../velum}
+CAASP_NAME_PREFIX=${CAASP_NAME_PREFIX:-}
+CAASP_BRIDGE=${CAASP_BRIDGE:-}
+
+TFVARS_FILE=${CAASP_TFVARS_FILE:-}
+
+ADMIN_RAM=${CAASP_ADMIN_RAM:-4096}
+ADMIN_CPU=${CAASP_ADMIN_CPU:-4}
+MASTER_RAM=${CAASP_MASTER_RAM:-2048}
+MASTER_CPU=${CAASP_MASTER_CPU:-2}
+WORKER_RAM=${CAASP_WORKER_RAM:-2048}
+WORKER_CPU=${CAASP_WORKER_CPU:-2}
+ADDITIONAL_VOLUME_COUNT=${CAASP_ADDITIONAL_VOLUME_COUNT:-0}
+ADDITIONAL_VOLUME_SIZE=${CAASP_ADDITIONAL_VOLUME_SIZE:-10}
+
+EXTRA_REPO=${CAASP_EXTRA_REPO:-}
+
+# the environment file
+ENVIRONMENT=$DIR/environment.json
+
+USAGE=$(cat <<USAGE
+Usage:
+
+  * Building a cluster
+
+    -b|--build                       Run the CaaSP KVM Build Step
+    -m|--masters <INT>               Number of masters to build (Default: CAASP_NUM_MASTERS=$MASTERS)
+    -w|--workers <INT>               Number of workers to build (Default: CAASP_NUM_WORKERS=$WORKERS)
+    -u|--update-deployment           Update Terraform deployment (Default: false)
+    -i|--image <STR>                 Image to use (Default: CAASP_IMAGE=$IMAGE)
+    --velum-image <STR>              Velum Image to use (Default: CAASP_VELUM_IMAGE=$VELUM_IMAGE)
+    --vanilla                        Do not inject devenv code, use vanilla caasp (Default: false)
+    --disable-meltdown-spectre-fixes Disable meltdown and spectre fixes (Default: false)
+    --bridge <STR>                   Bridge network interface to use (Default: none / create a network)
+
+  * Destroying a cluster
+
+    -d|--destroy                Run the CaaSP KVM Destroy Step
+
+  * Common options
+
+    -p|--parallelism            Set terraform parallelism (Default: CAASP_PARALLELISM)
+    -P|--proxy                  Set HTTP proxy (Default: CAASP_HTTP_PROXY)
+    -L|--location               Set location used for downloads (Default: CAASP_LOCATION or 'default')
+
+  * Local git checkouts
+
+     --salt-dir <DIR>           the Salt repo checkout (Default: CAASP_SALT_DIR)
+     --manifests-dir <DIR>      the manifests repo checkout (Default: CAASP_MANIFESTS_DIR)
+     --velum-dir <DIR>          the Velum repo checkout (Default: CAASP_VELUM_DIR)
+
+  * Advanced Options
+
+    --plan                      Run the CaaSP KVM Plan Step
+    --tfvars-file <STR>         Path to a specific .tfvars file to use (Default: .)
+    --admin-ram <INT>           RAM to allocate to admin node (Default: CAASP_ADMIN_RAM=$ADMIN_RAM)
+    --admin-cpu <INT>           CPUs to allocate to admin node (Default: CAASP_ADMIN_CPU=$ADMIN_CPU)
+    --master-ram <INT>          RAM to allocate to master node(s) (Default: CAASP_MASTER_RAM=$MASTER_RAM)
+    --worker-ram <INT>          CPUs to allocate to master node(s) (Default: CAASP_MASTER_CPU=$MASTER_CPU)
+    --master-cpu <INT>          RAM to allocate to worker node(s) (Default: CAASP_WORKER_RAM=$WORKER_RAM)
+    --worker-cpu <INT>          CPUs to allocate to worker node(s) (Default: CAASP_WORKER_CPU=$WORKER_CPU)
+    --extra-repo <STR>          URL of a custom repository on the master(s)/worker(s) (Default: CAASP_EXTRA_REPO)
+    --name-prefix <STR>         Name prefix for the terraform resources to make multiple clusters on one host possible (Default: "")
+    --additional-volumes <INT>  Number of additional blank volumes to attach to worker(s) (Default: 0)
+    --additional-vol-size <INT> Size in Gigabytes of additional volumes (Default: 10)
+
+  * Examples:
+
+  Build a 1 master, 2 worker cluster
+
+  $0 --build -m 1 -w 2
+
+  Build a 1 master, 2 worker cluster using the latest kubic image
+
+  $0 --build -m 1 -w 2 --image channel://kubic
+
+  Build a 1 master, 2 worker cluster using the latest staging A image
+
+  $0 --build -m 1 -w 2 --image channel://staging_a
+
+  Build a 1 master, 2 worker cluster and add a custom repository on the master(s)/worker(s)
+
+  $0 --build -m 1 -w 2 --extra-repo https://download.opensuse.org/repositories/devel:/CaaSP:/Head:/ControllerNode:/TestUpdates
+
+  Add a worker node to a running cluster
+
+  $0 --update-deployment -m 1 -w 3
+
+  Destroy a cluster
+
+  $0 --destroy
+
+USAGE
+)
+
+# Utility methods
+log()        { (>&2 echo ">>> [caasp-kvm] $@") ; }
+warn()       { log "WARNING: $@" ; }
+error()      { log "ERROR: $@" ; exit 1 ; }
+check_file() { if [ ! -f $1 ]; then error "File $1 doesn't exist!"; fi }
+usage()      { echo "$USAGE" ; exit 0 ; }
+
+# parse options
+while [[ $# > 0 ]] ; do
+  case $1 in
+    -b|--build)
+      ACTION=1
+      RUN_BUILD=1
+      ;;
+    -m|--masters)
+      MASTERS="$2"
+      shift
+      ;;
+    -w|--workers)
+      WORKERS="$2"
+      shift
+      ;;
+    -i|--image)
+      IMAGE="$2"
+      shift
+      ;;
+    --velum-image)
+      VELUM_IMAGE="$2"
+      shift
+      ;;
+    --vanilla)
+      VANILLA="true"
+      ;;
+    --disable-meltdown-spectre-fixes)
+      DISABLE_MELTDOWN_SPECTRE="true"
+      ;;
+    -p|--parallelism)
+      PARALLELISM="$2"
+      shift
+      ;;
+    -P|--proxy)
+      PROXY="$2"
+      shift
+      ;;
+    -L|--location)
+      LOCATION="$2"
+      shift
+      ;;
+    -d|--destroy)
+      ACTION=1
+      RUN_DESTROY=1
+      ;;
+    -u|--update-deployment)
+      ACTION=1
+      RUN_UPDATE_DEPLOYMENT=1
+      ;;
+    --salt-dir)
+      CAASP_SALT_DIR="$2"
+      shift
+      ;;
+    --manifests-dir)
+      CAASP_MANIFESTS_DIR="$2"
+      shift
+      ;;
+    --name-prefix)
+      CAASP_NAME_PREFIX="$2"
+      shift
+      ;;
+    --bridge)
+      CAASP_BRIDGE="$2"
+      shift
+      ;;
+    --velum-dir)
+      CAASP_VELUM_DIR="$2"
+      shift
+      ;;
+    --plan)
+      ACTION=1
+      RUN_PLAN=1
+      ;;
+    --tfvars-file)
+      TFVARS_FILE="$2"
+      shift
+      ;;
+    --admin-ram)
+      ADMIN_RAM="$2"
+      shift
+      ;;
+    --admin-cpu)
+      ADMIN_CPU="$2"
+      shift
+      ;;
+    --master-ram)
+      MASTER_RAM="$2"
+      shift
+      ;;
+    --master-cpu)
+      MASTER_CPU="$2"
+      shift
+      ;;
+    --worker-ram)
+      WORKER_RAM="$2"
+      shift
+      ;;
+    --worker-cpu)
+      WORKER_CPU="$2"
+      shift
+      ;;
+    --extra-repo)
+      EXTRA_REPO="$2"
+      shift
+      ;;
+    --additional-volumes)
+      ADDITIONAL_VOLUME_COUNT="$2"
+      shift
+      ;;
+    --additional-vol-size)
+      ADDITIONAL_VOLUME_SIZE="$2"
+      shift
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      log "Invalid option: $1"
+      usage
+      ;;
+  esac
+  shift
+done
+
+################################################################
+
+if [[ $(basename $IMAGE) =~ [Kk]ubic ]]; then
+  VELUM_IMAGE=channel://kubic
+  DIST=kubic
+  KUBIC_MANIFEST_FLAG="--kubic"
+# check if internal network is reachable and fail early
+elif [[ $(basename $IMAGE) =~ [Dd]evel_15 ]]; then
+  SLE15_MANIFEST_FLAG="--sle15"
+elif [[ -n "$RUN_BUILD" ]] && ! ping -q -c1 download.suse.de 2>&1 >/dev/null; then
+  cat <<EOF
+Internal network not reachable!
+  use $0 --image channel://kubic
+EOF
+  exit 1
+fi
+
+TF_ARGS="-parallelism=$PARALLELISM \
+         -var img_source_url=$IMAGE \
+         -var master_count=$MASTERS \
+         -var worker_count=$WORKERS \
+         -var admin_memory=$ADMIN_RAM \
+         -var admin_vcpu=$ADMIN_CPU \
+         -var master_memory=$MASTER_RAM \
+         -var master_vcpu=$MASTER_CPU \
+         -var worker_memory=$WORKER_RAM \
+         -var worker_vcpu=$WORKER_CPU \
+         -var additional_volume_size=$ADDITIONAL_VOLUME_SIZE"
+
+if [ ! -z "${TFVARS_FILE}" ] ; then
+  TF_ARGS="-var-file=$TFVARS_FILE \
+          ${TF_ARGS}"
+fi
+
+if [ -n "$CAASP_SALT_DIR" ] ; then
+  CAASP_SALT_DIR="$(realpath $CAASP_SALT_DIR)"
+  TF_ARGS="$TF_ARGS -var kubic_salt_dir=$CAASP_SALT_DIR"
+  log "Using Salt dir: $CAASP_SALT_DIR"
+fi
+
+if [ -n "$CAASP_VELUM_DIR" ] ; then
+  CAASP_VELUM_DIR="$(realpath $CAASP_VELUM_DIR)"
+  TF_ARGS="$TF_ARGS -var kubic_velum_dir=$CAASP_VELUM_DIR"
+  log "Using Velum dir: $CAASP_VELUM_DIR"
+fi
+
+if [ -n "$CAASP_MANIFESTS_DIR" ] ; then
+  CAASP_MANIFESTS_DIR="$(realpath $CAASP_MANIFESTS_DIR)"
+  log "Using Manifests dir: $CAASP_MANIFESTS_DIR"
+fi
+
+if [ -n "$CAASP_BRIDGE" ] ; then
+  log "Using bridged network: $CAASP_BRIDGE"
+fi
+
+if [ -n "$CAASP_NAME_PREFIX" ] ; then
+  TF_ARGS="$TF_ARGS -var name_prefix=$CAASP_NAME_PREFIX"
+  log "Using name prefix for terraform: $CAASP_NAME_PREFIX"
+fi
+
+if [ -n "${ADDITIONAL_VOLUME_COUNT}" ] ; then
+  log "Adding ${ADDITIONAL_VOLUME_COUNT} volumes of size ${ADDITIONAL_VOLUME_SIZE} GB to worker nodes"
+fi
+
+# Core methods
+render_cluster_tf() {
+  log "Generating terraform manifest from erb template"
+  VANILLA=${VANILLA} CAASP_BRIDGE=${CAASP_BRIDGE} \
+    DISABLE_MELTDOWN_SPECTRE=${DISABLE_MELTDOWN_SPECTRE} \
+    ADDITIONAL_VOLUME_COUNT=${ADDITIONAL_VOLUME_COUNT} \
+      erb -T - cluster.tf.erb > cluster.tf || \
+        error "Failed to generate cluster.tf, check that erb (part of Ruby) is installed correctly"
+}
+
+build() {
+  log "CaaS Platform Building"
+
+  log "Downloading CaaSP KVM Image"
+  $DIR/../misc-tools/download-image --proxy "${PROXY}" --location "${LOCATION}" --type kvm $IMAGE
+
+  if [ "$DISABLE_MELTDOWN_SPECTRE" == "true" ] ; then
+    log "Preparing artifacts required to disable spectre and meltdown patches"
+    $DIR/../misc-tools/extract-kernel-initrd-cmdline-args --disable-meltdown-spectre --output $DIR/../downloads --report $DIR/../downloads/kernel-initrd-cmds.json $DIR/../downloads/kvm-$(basename $IMAGE) || error "Error preparing artifacts required to disable meltdown and spectre"
+  fi
+
+  if [ -n "$CAASP_VELUM_DIR" -a "$VANILLA" != "true" ] ; then
+    log "Rebuilding Velum Development Docker Image"
+    $DIR/tools/build-velum-image "$CAASP_VELUM_DIR" "${VELUM_IMAGE}" "${PROXY}"
+
+    log "Creating Velum Directories"
+    mkdir -p "$CAASP_VELUM_DIR/tmp" "$CAASP_VELUM_DIR/log" "$CAASP_VELUM_DIR/vendor/bundle"
+
+    log "Copying CaaSP Container Manifests"
+    local injected="$(realpath injected-caasp-container-manifests)"
+    rm -rf $injected/*
+    cp -r $CAASP_MANIFESTS_DIR/* "$injected/"
+
+    log "Patching Container Manifests"
+    $DIR/tools/fix-kubelet-manifest ${SLE15_MANIFEST_FLAG:-} ${KUBIC_MANIFEST_FLAG:-} -o $injected/manifests/public.yaml $injected/manifests/public.yaml
+
+    if [ -n "${SLE15_MANIFEST_FLAG:-}" ]; then
+        log "Patching additional manifests and activate.sh to use registry images"
+        $DIR/tools/fix-kubelet-manifest ${SLE15_MANIFEST_FLAG:-} --noinit -o $injected/manifests/private.yaml $injected/manifests/private.yaml
+        $DIR/tools/fix-kubelet-manifest ${SLE15_MANIFEST_FLAG:-} --noinit -o $injected/manifests/haproxy.yaml $injected/manifests/haproxy.yaml
+        sed -i "s|sles12/pause:1.0.0|registry.suse.de/devel/casp/3.0/controllernode/images_container_base/sles12/pause:1.0.0|g" $injected/activate.sh
+        sed -i "s|use_registry: false|use_registry: true|g" $injected/config/registry/registry-config.yaml
+    fi
+
+    log "Patching activate.sh (again)"
+    if [ -n "${KUBIC_MANIFEST_FLAG:-}" ]; then
+      sed -i "s|sles12/pause:1.0.0|kubic/pause:0.1|g" $injected/activate.sh
+    fi
+  else
+    log "Skipping Velum environment"
+  fi
+
+  update_deployment
+
+  [ -n "$EXTRA_REPO" ] && $DIR/../misc-tools/inject_repo.sh $EXTRA_REPO
+
+  log "Waiting for Velum to start - this may take a while"
+  PYTHONUNBUFFERED=1 "$DIR/../misc-tools/wait-for-velum" --timeout 30 https://$(jq -r '.dashboardExternalHost' "$ENVIRONMENT")
+
+  log "CaaS Platform Ready for bootstrap"
+}
+
+plan() {
+  render_cluster_tf
+
+  log "Planning terraform configuration"
+  terraform plan $TF_ARGS
+}
+
+update_deployment() {
+  render_cluster_tf
+
+  log "Applying terraform configuration"
+  terraform init && terraform apply -auto-approve $TF_ARGS
+
+  $DIR/tools/generate-environment
+  $DIR/../misc-tools/generate-ssh-config $ENVIRONMENT
+}
+
+destroy() {
+  log "Destroying terraform configuration"
+  terraform init && \
+    terraform destroy -force $TF_ARGS && \
+    rm -f "$ENVIRONMENT"
+}
+
+[ -n "$ACTION" ] || usage
+[ -n "$RUN_PLAN" ] && plan
+[ -n "$RUN_BUILD" -a -z "$RUN_UPDATE_DEPLOYMENT" ] && build
+[ -n "$RUN_UPDATE_DEPLOYMENT" ] && update_deployment
+[ -n "$RUN_DESTROY" ] && destroy
+
+exit 0
