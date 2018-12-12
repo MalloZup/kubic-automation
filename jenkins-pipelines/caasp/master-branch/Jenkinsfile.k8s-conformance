@@ -1,4 +1,4 @@
-def kubicLib = library("kubic-jenkins-library@${env.BRANCH_NAME}").com.suse.kubic
+// This pipeline run conformance tests on a cluster. 
 
 // Configure the build properties
 properties([
