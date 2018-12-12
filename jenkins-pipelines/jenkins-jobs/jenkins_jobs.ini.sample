@@ -1,8 +1,0 @@
-[job_builder]
-keep_descriptions=True
-allow_duplicates=False
-
-[jenkins]
-url=http://jenkins.caasp.suse.net
-user=username
-password=password
